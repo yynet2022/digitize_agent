@@ -1,8 +1,8 @@
 # Agentic Plot & Document Digitization ツール仕様書
 
-本仕様書は、学術論文や技術文書内のグラフ（プロット）および表を、ローカル環境で自律的（Agentic）に高精度デジタイズするためのVLM Tool（OpenAI Function Calling互換）群の設計仕様です。
+本仕様書は、学術論文や技術文書内のグラフ（プロット）および表を、ローカル環境で自律的（Agentic）に高精度デジタイズするためのVLM Tool（OpenAI Function Calling互換）および MCP (Model Context Protocol) サーバー対応ツール群の設計仕様です。
 
-外部API送信およびモデル重みの自動ダウンロード（Hugging Face Hub等へのアクセス）を伴うモジュールを一切排除し、完全ローカルかつ決定論的に動作するライブラリ（`OpenCV`, `NumPy`, `SciPy`, `pandas`, `PyMuPDF`, `pytesseract`, `matplotlib`）のみで構成しています。
+外部API送信およびモデル重みの自動ダウンロード（Hugging Face Hub等へのアクセス）を伴うモジュールを一切排除し、完全ローカルかつ決定論的に動作するライブラリ（`OpenCV`, `NumPy`, `SciPy`, `pandas`, `PyMuPDF`, `pytesseract`, `matplotlib`, `mcp`）のみで構成しています。
 
 ---
 
@@ -15,20 +15,22 @@
 * 外部ネットワーク通信: なし（完全オフライン動作可能）
 * システム依存パッケージ: `tesseract-ocr`（ローカルインストール済みであること）
 
-### `requirements.txt`
+### 依存パッケージ (`pyproject.toml`)
 
-```text
-numpy>=1.24.0
-scipy>=1.10.0
-pandas>=2.0.0
-opencv-python>=4.8.0
-pillow>=10.0.0
-PyMuPDF>=1.23.0
-pdfplumber>=0.10.0
-pytesseract>=0.3.10
-matplotlib>=3.7.0
-pydantic>=2.0.0
-
+```toml
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "pandas>=2.0.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "PyMuPDF>=1.23.0",
+    "pdfplumber>=0.10.0",
+    "pytesseract>=0.3.10",
+    "matplotlib>=3.7.0",
+    "pydantic>=2.0.0",
+    "mcp>=1.0.0",
+]
 ```
 
 ---
@@ -551,7 +553,8 @@ digitize_agent/
 │          │   ├─ calibration.py        # Tool 6: calibrate_and_convert_coordinates
 │          │   └─ visual_verifier.py    # Tool 7: render_verification_overlay
 │          ├─ schema.py                 # OpenAI Function Calling スキーマ定義辞書
-│          └─ registry.py               # 関数ディスパッチャー (名前と実関数のマッピング)
+│          ├─ registry.py               # 関数ディスパッチャー (名前と実関数のマッピング)
+│          └─ server.py                 # MCP (Model Context Protocol) サーバー
 └─ tests/
 
 ```
@@ -561,3 +564,35 @@ digitize_agent/
 1. **型ヒントとPydanticモデル**: すべての引数および戻り値辞書には厳密なType Annotationsを付与すること。
 2. **エラー耐性**: ファイルが存在しない場合やパラメータ不正時には例外でプロセスを落とさず、`{"status": "error", "message": str(e)}` を返してVLMが再試行（リトライ）できるようにすること。
 3. **完全オフライン保証**: コード内で `urllib`, `requests`, `transformers`, `huggingface_hub` 等の外部通信モジュールをインポート・実行しないこと。
+
+---
+
+## 5. MCP (Model Context Protocol) サーバー仕様
+
+本ツール群はローカルの MCP サーバーとして起動し、Claude Desktop や各種 AI コーディングエージェント（Antigravity 等）から stdio 経由で呼び出すことが可能です。
+
+### サーバー起動方法
+
+```bash
+# パッケージの CLI エントリーポイント経由
+digitize-agent
+
+# または Python モジュール経由
+python -m digitize_agent.server
+```
+
+### クライアント設定例 (`claude_desktop_config.json` 等)
+
+```json
+{
+  "mcpServers": {
+    "digitize-agent": {
+      "command": "python",
+      "args": ["-m", "digitize_agent.server"]
+    }
+  }
+}
+```
+
+※仮想環境を利用している場合は、`command` に仮想環境内の Python インタプリタの絶対パス（例: `C:\\Users\\yy9zz\\PyWorks\\digitize_agent\\.venv\\Scripts\\python.exe`）を指定してください。
+

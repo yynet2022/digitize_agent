@@ -19,7 +19,11 @@ dependencies = [
     "pytesseract>=0.3.10",
     "matplotlib>=3.7.0",
     "pydantic>=2.0.0",
+    "mcp>=1.0.0",
 ]
+
+[project.scripts]
+digitize-agent = "digitize_agent.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
