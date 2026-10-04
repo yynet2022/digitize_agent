@@ -13,12 +13,14 @@ from digitize_agent.tools import (
     calibrate_and_convert_coordinates,
     crop_and_transform_region,
     detect_axes_and_ticks,
+    detect_legend_region,
     detect_plot_colors,
     extract_plot_pixels_by_color,
     extract_vector_curve_points,
     inspect_pdf_primitives,
     ocr_region_text,
     render_verification_overlay,
+    search_pdf_primitives,
 )
 
 
@@ -30,10 +32,12 @@ def create_server() -> MCPServer:
     """
     server = MCPServer("digitize-agent")
 
-    # デジタイズツール群の登録
+    # デジタイズツール群の登録 (全11ツール)
     server.add_tool(inspect_pdf_primitives)
+    server.add_tool(search_pdf_primitives)
     server.add_tool(crop_and_transform_region)
     server.add_tool(detect_axes_and_ticks)
+    server.add_tool(detect_legend_region)
     server.add_tool(ocr_region_text)
     server.add_tool(detect_plot_colors)
     server.add_tool(extract_plot_pixels_by_color)

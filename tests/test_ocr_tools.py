@@ -68,3 +68,20 @@ def test_ocr_not_installed_error(sample_plot_image: str) -> None:
 
         assert res["status"] == "error"
         assert "Tesseract OCR is not installed" in res["message"]
+
+
+def test_ocr_pdf_fallback(sample_pdf_with_text_and_lines: str) -> None:
+    """Tesseract 未導入時でも pdf_path 指定で文字抽出ができることを検証。"""
+    with patch(
+        "digitize_agent.tools.ocr_tools._ensure_tesseract_configured",
+        return_value=False,
+    ):
+        res = ocr_region_text(
+            pdf_path=sample_pdf_with_text_and_lines,
+            page_number=0,
+            bbox=[40.0, 40.0, 200.0, 60.0],
+        )
+
+        assert res.get("status") != "error"
+        assert "Sample Plot" in res["text"]
+        assert res["confidence"] == 100.0

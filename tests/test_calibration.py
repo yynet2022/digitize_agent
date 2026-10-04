@@ -130,6 +130,29 @@ def test_calibrate_multiple_curves(temp_dir: Path) -> None:
     assert list(df["curve"]) == ["curve_a", "curve_a", "curve_b"]
 
 
+def test_calibrate_name_fallback(temp_dir: Path) -> None:
+    """curves で 'name' や 'curve_name' もラベルとして受理されることを検証。"""
+    out_csv = str(temp_dir / "name_fallback.csv")
+    x_calib = {"pixel_refs": [0.0, 10.0], "val_refs": [0.0, 1.0]}
+    y_calib = {"pixel_refs": [0.0, 10.0], "val_refs": [0.0, 1.0]}
+
+    curves_input = [
+        {"points": [[0.0, 0.0]], "name": "alpha"},
+        {"points": [[5.0, 5.0]], "curve_name": "beta"},
+    ]
+
+    res = calibrate_and_convert_coordinates(
+        curves=curves_input,
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+    )
+
+    assert res["status"] == "success"
+    df = pd.read_csv(out_csv)
+    assert list(df["curve"]) == ["alpha", "beta"]
+
+
 def test_calibrate_empty_points(temp_dir: Path) -> None:
     """空の点リストを指定した際にエラーを返すことを検証する。"""
     out_csv = str(temp_dir / "empty.csv")

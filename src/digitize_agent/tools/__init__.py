@@ -12,6 +12,7 @@ from digitize_agent.tools.color_extractor import (
 )
 from digitize_agent.tools.geometry_detect import (
     detect_axes_and_ticks,
+    detect_legend_region,
 )
 from digitize_agent.tools.image_transforms import (
     crop_and_transform_region,
@@ -21,6 +22,7 @@ from digitize_agent.tools.ocr_tools import (
 )
 from digitize_agent.tools.pdf_tools import (
     inspect_pdf_primitives,
+    search_pdf_primitives,
 )
 from digitize_agent.tools.vector_curves import (
     extract_vector_curve_points,
@@ -31,8 +33,10 @@ from digitize_agent.tools.visual_verifier import (
 
 __all__ = [
     "inspect_pdf_primitives",
+    "search_pdf_primitives",
     "crop_and_transform_region",
     "detect_axes_and_ticks",
+    "detect_legend_region",
     "ocr_region_text",
     "detect_plot_colors",
     "extract_plot_pixels_by_color",

@@ -13,18 +13,20 @@ EXPECTED_TOOLS = [
     "calibrate_and_convert_coordinates",
     "crop_and_transform_region",
     "detect_axes_and_ticks",
+    "detect_legend_region",
     "detect_plot_colors",
     "extract_plot_pixels_by_color",
     "extract_vector_curve_points",
     "inspect_pdf_primitives",
     "ocr_region_text",
     "render_verification_overlay",
+    "search_pdf_primitives",
 ]
 
 
 def test_schema_definitions() -> None:
-    """定義されているスキーマが仕様の9ツールと一致し構造が妥当かを検証する。"""
-    assert len(ALL_SCHEMAS) == 9
+    """定義されているスキーマが仕様の全11ツールと一致し構造が妥当かを検証する。"""
+    assert len(ALL_SCHEMAS) == 11
     for name in EXPECTED_TOOLS:
         assert name in SCHEMAS_BY_NAME
         schema = SCHEMAS_BY_NAME[name]
@@ -36,7 +38,7 @@ def test_schema_definitions() -> None:
 
 
 def test_registry_tool_listing() -> None:
-    """レジストリが仕様で定義された全9ツールを保持していることを検証する。"""
+    """レジストリが仕様で定義された全11ツールを保持していることを検証する。"""
     tools = list_tools()
     assert sorted(tools) == sorted(EXPECTED_TOOLS)
 

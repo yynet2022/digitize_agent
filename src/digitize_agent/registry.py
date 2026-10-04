@@ -11,20 +11,24 @@ from digitize_agent.tools import (
     calibrate_and_convert_coordinates,
     crop_and_transform_region,
     detect_axes_and_ticks,
+    detect_legend_region,
     detect_plot_colors,
     extract_plot_pixels_by_color,
     extract_vector_curve_points,
     inspect_pdf_primitives,
     ocr_region_text,
     render_verification_overlay,
+    search_pdf_primitives,
 )
 
 ToolFunction = Callable[..., dict[str, Any]]
 
 TOOL_REGISTRY: dict[str, ToolFunction] = {
     "inspect_pdf_primitives": inspect_pdf_primitives,
+    "search_pdf_primitives": search_pdf_primitives,
     "crop_and_transform_region": crop_and_transform_region,
     "detect_axes_and_ticks": detect_axes_and_ticks,
+    "detect_legend_region": detect_legend_region,
     "ocr_region_text": ocr_region_text,
     "detect_plot_colors": detect_plot_colors,
     "extract_plot_pixels_by_color": extract_plot_pixels_by_color,

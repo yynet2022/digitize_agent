@@ -12,24 +12,97 @@ import cv2
 import numpy as np
 from pydantic import BaseModel, Field
 
+ColorPresetType = Literal[
+    "blue",
+    "red",
+    "green",
+    "orange",
+    "black",
+    "cyan",
+    "magenta",
+    "yellow",
+    "purple",
+    "brown",
+    "pink",
+    "gray",
+]
+
 COLOR_PRESETS: dict[str, tuple[list[int], list[int]]] = {
     "blue": ([90, 50, 50], [130, 255, 255]),
     "red": ([0, 70, 50], [10, 255, 255]),
     "green": ([35, 50, 50], [85, 255, 255]),
     "orange": ([11, 70, 50], [25, 255, 255]),
     "black": ([0, 0, 0], [180, 255, 60]),
+    "cyan": ([80, 50, 50], [105, 255, 255]),
+    "magenta": ([140, 50, 50], [170, 255, 255]),
+    "yellow": ([25, 70, 50], [35, 255, 255]),
+    "purple": ([125, 50, 50], [150, 255, 255]),
+    "brown": ([10, 80, 20], [25, 200, 150]),
+    "pink": ([160, 40, 150], [175, 200, 255]),
+    "gray": ([0, 0, 50], [180, 35, 200]),
 }
+
+
+def _parse_hex_color(hex_str: str) -> tuple[int, int, int]:
+    """16進数カラーコードをRGBタプルに変換する。"""
+    s = hex_str.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join([c * 2 for c in s])
+    if len(s) != 6:
+        raise ValueError(f"Invalid hex color format: {hex_str}")
+    r = int(s[0:2], 16)
+    g = int(s[2:4], 16)
+    b = int(s[4:6], 16)
+    return (r, g, b)
+
+
+def _rgb_to_hsv_bounds(
+    rgb: tuple[int, int, int],
+    tolerance: float = 0.15,
+) -> tuple[list[int], list[int]]:
+    """RGB色から許容誤差を考慮したHSV上限・下限値を算出する。"""
+    r, g, b = rgb
+    pixel_bgr = np.uint8([[[b, g, r]]])
+    hsv_pixel = cv2.cvtColor(pixel_bgr, cv2.COLOR_BGR2HSV)[0][0]
+    h, s, v = int(hsv_pixel[0]), int(hsv_pixel[1]), int(hsv_pixel[2])
+
+    h_tol = max(6, int(180 * tolerance))
+    s_tol = max(35, int(255 * tolerance))
+    v_tol = max(35, int(255 * tolerance))
+
+    h_low = max(0, h - h_tol)
+    h_high = min(179, h + h_tol)
+    s_low = max(30, s - s_tol)
+    s_high = min(255, s + s_tol)
+    v_low = max(30, v - v_tol)
+    v_high = min(255, v + v_tol)
+
+    return ([h_low, s_low, v_low], [h_high, s_high, v_high])
 
 
 class ExtractPlotPixelsInput(BaseModel):
     """extract_plot_pixels_by_color 関数の入力バリデーションモデル。"""
 
     image_path: str = Field(description="Path to the plot image file.")
-    color_preset: Literal["blue", "red", "green", "orange", "black"] | None = (
-        Field(
-            default=None,
-            description="Preset color name ('blue', 'red', 'green', etc.).",
-        )
+    color_preset: ColorPresetType | None = Field(
+        default=None,
+        description="Preset color name ('blue', 'red', 'cyan', etc.).",
+    )
+    target_rgb: list[int] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="Target RGB color [R, G, B] (0-255 each).",
+    )
+    target_hex: str | None = Field(
+        default=None,
+        description="Target color in hex format (e.g., '#0072BD', 'FF0000').",
+    )
+    color_tolerance: float = Field(
+        default=0.15,
+        ge=0.01,
+        le=0.5,
+        description="Tolerance factor (0.01-0.5) when matching RGB/Hex.",
     )
     hsv_lower: list[int] | None = Field(
         default=None,
@@ -42,6 +115,18 @@ class ExtractPlotPixelsInput(BaseModel):
         min_length=3,
         max_length=3,
         description="HSV upper bound [H (0-179), S (0-255), V (0-255)].",
+    )
+    bbox: list[int] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description="Optional bounding box [x_min, y_min, x_max, y_max].",
+    )
+    exclude_bboxes: list[list[int]] | None = Field(
+        default=None,
+        description=(
+            "Optional list of bounding boxes to mask out (e.g. legends)."
+        ),
     )
     extract_mode: Literal["continuous_line", "scatter_centroids"] = Field(
         default="continuous_line",
@@ -92,19 +177,28 @@ def _classify_hsv_color_name(h: float, s: float, v: float) -> str:
 
 def extract_plot_pixels_by_color(
     image_path: str,
-    color_preset: Literal["blue", "red", "green", "orange", "black"]
-    | None = None,
+    color_preset: ColorPresetType | None = None,
+    target_rgb: list[int] | None = None,
+    target_hex: str | None = None,
+    color_tolerance: float = 0.15,
     hsv_lower: list[int] | None = None,
     hsv_upper: list[int] | None = None,
+    bbox: list[int] | None = None,
+    exclude_bboxes: list[list[int]] | None = None,
     extract_mode: str = "continuous_line",
 ) -> dict[str, Any]:
-    """HSV色閾値またはプリセットによりプロットのピクセル座標群を抽出する。
+    """HSV色閾値、プリセット、RGB/Hexによりプロットの座標群を抽出する。
 
     Args:
         image_path: 対象画像のファイルパス。
-        color_preset: 代表色プリセット ('blue', 'red', 'green' 等)。
+        color_preset: 代表色プリセット ('blue', 'cyan', 'magenta' 等)。
+        target_rgb: 対象 RGB 色 [R, G, B] (0-255)。
+        target_hex: 対象 16 進カラーコード (例: '#0072BD')。
+        color_tolerance: RGB/Hex 照合時の許容誤差係数 (0.01-0.5)。
         hsv_lower: HSV 下限値リスト [H, S, V] (手動指定時)。
         hsv_upper: HSV 上限値リスト [H, S, V] (手動指定時)。
+        bbox: 抽出対象の矩形範囲 [x_min, y_min, x_max, y_max]。
+        exclude_bboxes: 除外する矩形範囲のリスト (凡例枠等)。
         extract_mode: 抽出モード
             ("continuous_line" または "scatter_centroids")。
 
@@ -115,28 +209,50 @@ def extract_plot_pixels_by_color(
         validated = ExtractPlotPixelsInput(
             image_path=image_path,
             color_preset=color_preset,
+            target_rgb=target_rgb,
+            target_hex=target_hex,
+            color_tolerance=color_tolerance,
             hsv_lower=hsv_lower,
             hsv_upper=hsv_upper,
+            bbox=bbox,
+            exclude_bboxes=exclude_bboxes,
             extract_mode=extract_mode,  # type: ignore[arg-type]
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
 
-    # プリセットまたは手動パラメータの解決
+    # プリセット、RGB/Hex、または手動パラメータの解決
     effective_lower = validated.hsv_lower
     effective_upper = validated.hsv_upper
 
-    if validated.color_preset is not None:
+    # 1. Hex 指定の解決
+    resolved_rgb = validated.target_rgb
+    if validated.target_hex is not None and resolved_rgb is None:
+        try:
+            resolved_rgb = list(_parse_hex_color(validated.target_hex))
+        except ValueError as v_err:
+            return {"status": "error", "message": str(v_err)}
+
+    # 2. RGB 指定の解決
+    if resolved_rgb is not None and effective_lower is None:
+        r, g, b = resolved_rgb
+        effective_lower, effective_upper = _rgb_to_hsv_bounds(
+            (r, g, b), validated.color_tolerance
+        )
+
+    # 3. プリセット指定の解決
+    if validated.color_preset is not None and effective_lower is None:
         p_lower, p_upper = COLOR_PRESETS[validated.color_preset]
-        if effective_lower is None:
-            effective_lower = p_lower
-        if effective_upper is None:
-            effective_upper = p_upper
+        effective_lower = p_lower
+        effective_upper = p_upper
 
     if effective_lower is None or effective_upper is None:
         return {
             "status": "error",
-            "message": "Either color_preset or (hsv_lower, hsv_upper) needed.",
+            "message": (
+                "Either color_preset, target_rgb, target_hex, or "
+                "(hsv_lower, hsv_upper) must be provided."
+            ),
         }
 
     img_path = Path(validated.image_path)
@@ -174,6 +290,25 @@ def extract_plot_pixels_by_color(
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+        # 指定領域 (bbox) 以外のピクセルをゼロマスク
+        h_img, w_img = mask.shape[:2]
+        if validated.bbox is not None:
+            bx0, by0, bx1, by1 = validated.bbox
+            bx0 = max(0, min(w_img - 1, bx0))
+            bx1 = max(0, min(w_img, bx1))
+            by0 = max(0, min(h_img - 1, by0))
+            by1 = max(0, min(h_img, by1))
+            roi_mask = np.zeros_like(mask)
+            roi_mask[by0:by1, bx0:bx1] = 255
+            mask = cv2.bitwise_and(mask, roi_mask)
+
+        # 除外領域 (exclude_bboxes, 凡例など) をゼロマスク
+        if validated.exclude_bboxes is not None:
+            for ex_box in validated.exclude_bboxes:
+                if len(ex_box) >= 4:
+                    ex0, ey0, ex1, ey1 = ex_box[:4]
+                    cv2.rectangle(mask, (ex0, ey0), (ex1, ey1), 0, -1)
 
         pixel_points: list[list[int]] = []
 

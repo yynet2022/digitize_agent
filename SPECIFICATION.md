@@ -40,14 +40,17 @@ dependencies = [
 ```text
 [入力ドキュメント (PDF / 画像)]
    │
-   ├─ (PDF の場合: 構造解析) ──> inspect_pdf_primitives (埋め込みテキスト・ベクター直接抽出)
+   ├─ (PDF の場合: 構造解析・検索)
+   │     ├─> search_pdf_primitives (キーワード検索による図表・キャプションのページ・bbox高速特定)
+   │     └─> inspect_pdf_primitives (埋め込みテキスト・ベクター直接抽出)
    │
    ├─ パターン A: PDF ベクター描画グラフ (ベジェ曲線)
    │     │
    │     ├──> crop_and_transform_region (PDF直接レンダリング・DPI指定クロップ)
-   │     │       └──> detect_axes_and_ticks (軸線および目盛りピクセル検出)
+   │     │       ├──> detect_axes_and_ticks (軸線および目盛りピクセル検出)
+   │     │       └──> detect_legend_region (凡例枠・テキスト領域の検出・除外範囲特定)
    │     │
-   │     ├──> extract_vector_curve_points (PDFベクターパスから解析的サンプリング)
+   │     ├──> extract_vector_curve_points (PDFベクターパスからサンプリング・色/長さフィルタ)
    │     │
    │     ├──> calibrate_and_convert_coordinates (物理量変換・複数曲線一括 CSV 出力)
    │     │
@@ -59,29 +62,33 @@ dependencies = [
          │       │
          │       ├──> detect_axes_and_ticks (座標軸・目盛りピクセル検出)
          │       │
-         │       ├──> ocr_region_text (軸ラベル・目盛り数値の文字認識)
+         │       ├──> detect_legend_region (凡例ボックスの検出と除外矩形の取得)
+         │       │
+         │       ├──> ocr_region_text (軸ラベル・目盛り数値の認識・PDFテキストフォールバック)
          │       │
          │       ├──> detect_plot_colors (画像内の主要プロット色を自動検出)
          │       │
-         │       └──> extract_plot_pixels_by_color (色プリセット/HSV閾値による点抽出)
+         │       └──> extract_plot_pixels_by_color (RGB/Hex/許容誤差/除外領域指定による点抽出)
          │
          ├──> calibrate_and_convert_coordinates (実数値変換・列名指定 CSV 出力)
          │
          └──> render_verification_overlay (再描画と元画像の重ね合わせ検証)
 ```
 
-### 全 9 ツール一覧表
+### 全 11 ツール一覧表
 
 | ツール関数名 | 役割・機能概要 |
 | :--- | :--- |
 | `inspect_pdf_primitives` | PDF からラスター変換を経由せず、直接埋め込まれたテキスト要素およびベクター罫線を抽出 |
+| `search_pdf_primitives` | PDF 全体または特定ページから指定キーワードを検索し、出現ページ、bbox、文脈スニペットを返却 |
 | `crop_and_transform_region` | 画像または PDF から直接指定 DPI で領域を切り出し、傾き補正 (Deskew) や強調 (CLAHE) を適用 |
 | `detect_axes_and_ticks` | グラフ画像内の主軸（水平 X 軸・垂直 Y 軸）および目盛り線（Tick marks）のピクセル座標を幾何学的に検出 |
-| `ocr_region_text` | 切り出し画像スニペットに対して Tesseract OCR を実行し、目盛り数値や軸ラベル等のテキストと信頼度を返却 |
+| `detect_legend_region` | プロット画像内の凡例（Legend）矩形枠やテキストブロックを検出し、プロット抽出時の除外領域 (exclude_bboxes) を特定 |
+| `ocr_region_text` | 切り出し画像スニペットに対して Tesseract OCR を実行（PDF指定時は電子埋め込みテキストの直接抽出を優先フォールバック） |
 | `detect_plot_colors` | 画像内の主要プロット色（色名、代表 HSV 値、画素占有率）を自動検出し、色抽出のための推奨設定を提示 |
-| `extract_plot_pixels_by_color` | 色プリセット（'blue', 'red' 等）または HSV 閾値に基づき、指定色プロットのピクセル座標群を抽出 |
-| `extract_vector_curve_points` | PDF 内部のベクター描画命令（3次ベジェ曲線・折れ線）から等間隔座標列をサンプリングし、クロップ座標系へ自動変換 |
-| `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換し、列名指定や複数曲線を統合した CSV ファイルを出力 |
+| `extract_plot_pixels_by_color` | 色名プリセット、RGB配列、Hex値、許容誤差、抽出領域 (bbox)、除外領域 (exclude_bboxes) に基づきプロット点を高精度抽出 |
+| `extract_vector_curve_points` | PDF 内部のベクター描画命令から等間隔座標列をサンプリング。目盛り線除外 (min_length)、特定色線指定 (stroke_color)、全描画抽出に対応 |
+| `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換し、列名指定や複数曲線を統合した CSV ファイルを出力（label/name/curve_name 対応） |
 | `render_verification_overlay` | デジタイズされた CSV データを元画像の座標系へ逆変換して複数曲線を自動色分けした半透明オーバーレイ画像を生成し、適合度指標を算出 |
 
 ---
@@ -141,7 +148,66 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
 
 ---
 
-### Tool 2: `crop_and_transform_region`
+### Tool 2: `search_pdf_primitives`
+
+* **ツール関数名**: `search_pdf_primitives`
+* **内部使用モジュール**: `pymupdf` (`fitz`)
+* **役割・機能**:
+PDF ドキュメント内から指定されたキーワード（大文字小文字無視）を高速にテキスト検索し、マッチした箇所の出現ページ番号、バウンディングボックス座標 `[x0, y0, x1, y1]`、および前後の文脈スニペットを返却します。論文中の "Figure 5" や "Fig. 3" などのキャプション位置をピンポイントで特定し、その近傍のプロット領域を正確に切り出すための前処理として機能します。
+* **OpenAI Function Calling 定義 (JSON Schema)**:
+
+```json
+{
+  "name": "search_pdf_primitives",
+  "description": "Search for keywords across a PDF document or a specific page to locate target figures, tables, or sections, returning page numbers, bounding boxes, and surrounding text snippets.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pdf_path": {
+        "type": "string",
+        "description": "Absolute or relative path to the local PDF file."
+      },
+      "query": {
+        "type": "string",
+        "description": "Keyword or text snippet to search for (case-insensitive)."
+      },
+      "page_number": {
+        "type": "integer",
+        "description": "Optional 0-indexed page number to restrict search. If omitted, searches all pages."
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Maximum number of search results to return.",
+        "default": 10
+      }
+    },
+    "required": ["pdf_path", "query"]
+  }
+}
+```
+
+* **入出力仕様**:
+  * **引数**:
+    * `pdf_path` (str): 対象 PDF ファイルのローカルパス。
+    * `query` (str): 検索語句（大文字小文字は区別されません）。
+    * `page_number` (int, 任意): 検索対象ページ番号（0始まり）。省略時は全ページ対象。
+    * `max_results` (int, 任意, 初期値: 10): 最大取得件数。
+  * **戻り値 (dict)**:
+    * `status` (str): `"success"`。
+    * `query` (str): 検索された語句。
+    * `total_matches` (int): ヒットした件数。
+    * `matches` (list[dict]): 各ヒット情報のリスト。
+      * `page`: ページ番号（0始まり）。
+      * `bbox`: マッチ箇所のバウンディングボックス `[x0, y0, x1, y1]`（pt単位）。
+      * `snippet`: マッチ箇所を含む行や文脈の抜粋テキスト。
+* **実装要件・アルゴリズム**:
+  * `pymupdf.open(pdf_path)` でドキュメントを走査。
+  * `page.search_for(query)` により矩形座標リストを取得。
+  * 各マッチ矩形を含むテキストブロックまたは行から文脈スニペットを抽出。
+
+---
+
+### Tool 3: `crop_and_transform_region`
 
 * **ツール関数名**: `crop_and_transform_region`
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`, `pymupdf` (`fitz`)
@@ -231,7 +297,7 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
 
 ---
 
-### Tool 3: `detect_axes_and_ticks`
+### Tool 4: `detect_axes_and_ticks`
 
 * **ツール関数名**: `detect_axes_and_ticks`
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`, `scipy.signal`
@@ -273,18 +339,66 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
 
 ---
 
-### Tool 4: `ocr_region_text`
+### Tool 5: `detect_legend_region`
+
+* **ツール関数名**: `detect_legend_region`
+* **内部使用モジュール**: `cv2` (OpenCV), `numpy`
+* **役割・機能**:
+切り出したプロット画像の中から、凡例（Legend）ボックスの矩形枠線、または複数行のテキストやマーカーが密集した凡例候補領域を輪郭検出および連結成分解析により自動検出します。検出された矩形バウンディングボックス群は、色抽出ツール `extract_plot_pixels_by_color` の `exclude_bboxes` に直接渡すことで、凡例マーカーや説明テキストがデータ曲線として誤抽出されるのを防ぎます。
+* **OpenAI Function Calling 定義 (JSON Schema)**:
+
+```json
+{
+  "name": "detect_legend_region",
+  "description": "Detect legend bounding boxes or text-dense annotation regions within a plot image to exclude them during curve pixel extraction.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "image_path": {
+        "type": "string",
+        "description": "Path to the cropped plot image."
+      },
+      "min_area_ratio": {
+        "type": "number",
+        "description": "Minimum area ratio relative to image size to qualify as a legend box.",
+        "default": 0.01
+      },
+      "max_area_ratio": {
+        "type": "number",
+        "description": "Maximum area ratio relative to image size.",
+        "default": 0.35
+      }
+    },
+    "required": ["image_path"]
+  }
+}
+```
+
+* **入出力仕様**:
+  * **引数**:
+    * `image_path` (str): グラフ領域の画像パス。
+    * `min_area_ratio` (float, 初期値: 0.01): 画像全体に対する凡例枠の最小面積比率。
+    * `max_area_ratio` (float, 初期値: 0.35): 画像全体に対する凡例枠の最大面積比率。
+  * **戻り値 (dict)**:
+    * `status` (str): `"success"`。
+    * `legends_detected` (int): 検出された凡例領域の総数。
+    * `legend_bboxes` (list[list[int]]): 検出された凡例の矩形座標 `[x0, y0, x1, y1]` のリスト（`exclude_bboxes` 互換形式）。
+    * `candidates` (list[dict]): 各候補領域のバウンディングボックス、面積比等の詳細情報。
+
+---
+
+### Tool 6: `ocr_region_text`
 
 * **ツール関数名**: `ocr_region_text`
-* **内部使用モジュール**: `pytesseract`, `PIL` (Pillow), `cv2`
+* **内部使用モジュール**: `pytesseract`, `PIL` (Pillow), `cv2`, `pymupdf` (`fitz`)
 * **役割・機能**:
-切り出した領域（目盛りの数値部分、軸ラベル、凡例など）に対して、ローカルのTesseract OCRを実行し、認識テキストと確信度スコアを返します。
+切り出した領域（目盛りの数値部分、軸ラベル、凡例など）に対してテキストを認識します。`pdf_path` および `pdf_bbox` が指定された場合は、解像度劣化やOCR誤認識を防ぐため、電子PDF内部の埋め込みベクターテキストの直接抽出を優先試行（確信度 100.0）し、該当テキストが存在しない場合に Tesseract OCR へ自動フォールバックします。
 * **OpenAI Function Calling 定義 (JSON Schema)**:
 
 ```json
 {
   "name": "ocr_region_text",
-  "description": "Execute OCR on an image snippet to recognize axis labels, tick numbers, or table cell contents.",
+  "description": "Execute OCR on an image snippet to recognize axis labels, tick numbers, or table cell contents. If pdf_path and pdf_bbox are provided, attempts direct text extraction first.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -300,6 +414,22 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
       "whitelist": {
         "type": "string",
         "description": "Optional character whitelist, e.g., '0123456789.-+eE'."
+      },
+      "pdf_path": {
+        "type": "string",
+        "description": "Optional path to the source PDF file for direct text extraction fallback."
+      },
+      "page_number": {
+        "type": "integer",
+        "description": "0-indexed PDF page number.",
+        "default": 0
+      },
+      "pdf_bbox": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 4,
+        "maxItems": 4,
+        "description": "Optional PDF point bounding box [x0, y0, x1, y1] for direct text extraction."
       }
     },
     "required": ["image_path"]
@@ -312,14 +442,19 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
     * `image_path` (str): 入力画像パス。
     * `psm` (int, 初期値: 6): Tesseract PSMモード。
     * `whitelist` (str, 任意): 許可する文字一覧。
+    * `pdf_path` (str, 任意): 元 PDF のローカルパス。
+    * `page_number` (int, 任意, 初期値: 0): 対象ページ。
+    * `pdf_bbox` (list[float], 任意): 抽出対象の PDF ポイント座標矩形 `[x0, y0, x1, y1]`。
   * **戻り値 (dict)**:
+    * `status` (str): `"success"`。
     * `text` (str): 生テキスト。
     * `clean_text` (str): 空白・改行整形テキスト。
-    * `confidence` (float): OCR全体の平均確信度スコア（0.0〜100.0）。
+    * `confidence` (float): テキスト確信度スコア（0.0〜100.0、PDF直接抽出時は 100.0）。
+    * `source` (str): テキスト取得元（`"pdf_vector"` または `"tesseract_ocr"`）。
 
 ---
 
-### Tool 5: `detect_plot_colors`
+### Tool 7: `detect_plot_colors`
 
 * **ツール関数名**: `detect_plot_colors`
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`
@@ -372,18 +507,18 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
 
 ---
 
-### Tool 6: `extract_plot_pixels_by_color`
+### Tool 8: `extract_plot_pixels_by_color`
 
 * **ツール関数名**: `extract_plot_pixels_by_color`
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`
 * **役割・機能**:
-代表色プリセット（'blue', 'red', 'green' 等）または手動の HSV 色閾値に基づき、指定色プロットのピクセル座標群を抽出します。ノイズ除去（開閉演算）を行い、連続線または散布図マーカーの重心座標を配列化して返します。
+代表色名プリセット、RGB配列 `[R, G, B]`、Hexカラーコード `"#RRGGBB"`、または手動の HSV 色閾値に基づき、指定色プロットのピクセル座標群を高精度に抽出します。抽出対象領域の限定 (`bbox`) や凡例等の除外矩形リスト (`exclude_bboxes`)、色差の許容誤差 (`color_tolerance`) を指定可能です。ノイズ除去（開閉演算）を行い、連続線または散布図マーカーの重心座標を配列化して返します。
 * **OpenAI Function Calling 定義 (JSON Schema)**:
 
 ```json
 {
   "name": "extract_plot_pixels_by_color",
-  "description": "Filter and extract pixel coordinates for data lines or markers of a specified color using presets or HSV thresholds.",
+  "description": "Filter and extract pixel coordinates for data lines or markers of a specified color using presets, target RGB/Hex, or HSV thresholds, with bbox restrictions and legend exclusion.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -393,8 +528,28 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
       },
       "color_preset": {
         "type": "string",
-        "enum": ["blue", "red", "green", "orange", "black"],
+        "enum": [
+          "blue", "red", "green", "orange", "black",
+          "cyan", "magenta", "yellow", "purple",
+          "brown", "pink", "gray"
+        ],
         "description": "Preset color name for quick extraction."
+      },
+      "target_rgb": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Target color in RGB [R, G, B] (0-255)."
+      },
+      "target_hex": {
+        "type": "string",
+        "description": "Target color in Hex format, e.g. '#1F77B4' or 'FF5733'."
+      },
+      "color_tolerance": {
+        "type": "number",
+        "description": "Color distance tolerance in RGB Euclidean distance (default: 35.0).",
+        "default": 35.0
       },
       "hsv_lower": {
         "type": "array",
@@ -409,6 +564,23 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
         "minItems": 3,
         "maxItems": 3,
         "description": "HSV upper bound [H, S, V]."
+      },
+      "bbox": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 4,
+        "maxItems": 4,
+        "description": "Optional bounding box [x0, y0, x1, y1] to restrict pixel extraction."
+      },
+      "exclude_bboxes": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "description": "List of bounding boxes [[x0, y0, x1, y1], ...] to exclude from extraction (e.g. legend boxes)."
       },
       "extract_mode": {
         "type": "string",
@@ -425,9 +597,14 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
 * **入出力仕様**:
   * **引数**:
     * `image_path` (str): 対象画像パス。
-    * `color_preset` (str, 任意): 代表色プリセット名。
-    * `hsv_lower` (list[int], 任意): HSV下限値。
-    * `hsv_upper` (list[int], 任意): HSV上限値。
+    * `color_preset` (str, 任意): 代表色プリセット名（`blue`, `red`, `green`, `orange`, `black`, `cyan`, `magenta`, `yellow`, `purple`, `brown`, `pink`, `gray`）。
+    * `target_rgb` (list[int], 任意): 抽出対象の RGB 値 `[R, G, B]` (0〜255)。
+    * `target_hex` (str, 任意): 抽出対象の 16 進数カラーコード（例: `"#1F77B4"`）。
+    * `color_tolerance` (float, 初期値: 35.0): RGB ユークリッド距離による色の許容誤差。
+    * `hsv_lower` (list[int], 任意): HSV 下限値 `[H, S, V]`。
+    * `hsv_upper` (list[int], 任意): HSV 上限値 `[H, S, V]`。
+    * `bbox` (list[float], 任意): 抽出領域を制限するバウンディングボックス `[x0, y0, x1, y1]`。
+    * `exclude_bboxes` (list[list[float]], 任意): 除外する矩形領域リスト（凡例ボックス等）。
     * `extract_mode` (str, 初期値: "continuous_line"): `"continuous_line"` または `"scatter_centroids"`。
   * **戻り値 (dict)**:
     * `status` (str): `"success"`。
@@ -436,12 +613,13 @@ PDFファイルからラスター変換を経由せず、直接埋め込まれ�
 
 ---
 
-### Tool 7: `extract_vector_curve_points`
+### Tool 9: `extract_vector_curve_points`
 
 * **ツール関数名**: `extract_vector_curve_points`
 * **内部使用モジュール**: `pymupdf` (`fitz`), `numpy`, `math`
 * **役割・機能**:
 PDF内部のベクター描画命令（3次ベジェ曲線 `'c'` や線分 `'l'`）を解析し、等間隔にサンプリングした座標列を抽出します。
+微小な目盛り線やノイズ線分を自動除外する `min_length` フィルタ、特定ストローク色のみを抽出する `stroke_color` フィルタ、ページ内の全描画オブジェクトから一括抽出する `extract_all_matching` を備えています。また、`drawing_index` 未指定時は有効な曲線を含む描画オブジェクトを自動探索・選択します。
 原点を共有する複数曲線が誤って折り返し結合されないよう、ベクトル進行方向の内積を判定する幾何学的連結処理（`_chain_segments`）を備えています。
 DPI スケーリングおよびクロップ原点オフセットの自動変換に対応し、画像解析ツール側のピクセル座標系と完全に一致する点列を出力できます。
 * **OpenAI Function Calling 定義 (JSON Schema)**:
@@ -449,7 +627,7 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
 ```json
 {
   "name": "extract_vector_curve_points",
-  "description": "Sample dense coordinate points from vector Bézier curves or lines inside a PDF drawing, with auto-chaining and crop transformation.",
+  "description": "Sample dense coordinate points from vector Bézier curves or lines inside a PDF drawing, with auto-chaining, min_length filtering, color filtering, and crop transformation.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -492,6 +670,23 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
         },
         "description": "Optional explicit item grouping for curves."
       },
+      "min_length": {
+        "type": "number",
+        "description": "Minimum path length in points to filter out small tick marks or noisy segments.",
+        "default": 0.0
+      },
+      "stroke_color": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Optional stroke color filter [r, g, b] with values normalized in [0.0, 1.0]."
+      },
+      "extract_all_matching": {
+        "type": "boolean",
+        "description": "If true, extracts and returns curves from all matching drawing objects on the page.",
+        "default": false
+      },
       "num_samples_per_segment": {
         "type": "integer",
         "description": "Number of sample points per Bézier curve.",
@@ -528,29 +723,34 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
     * `curve_types` (list[str], 初期値: `["c"]`): 対象要素種別（`'c'` はベジェ曲線、`'l'` は線分）。
     * `item_indices` (list[int], 任意): 描画内の特定アイテム番号リスト。
     * `curve_segments` (list[list[int]], 任意): 曲線ごとにアイテムをグループ化したリスト。
+    * `min_length` (float, 初期値: 0.0): 微小目盛り線やノイズを除外する最小長さ（pt）。
+    * `stroke_color` (list[float], 任意): `[r, g, b]` (0.0〜1.0) のストローク色フィルタ。
+    * `extract_all_matching` (bool, 初期値: False): True の場合、全マッチ描画の曲線を返却。
     * `num_samples_per_segment` (int, 初期値: 50): 1区間のサンプリング点数。
     * `sort_x_ascending` (bool, 初期値: True): X座標を昇順に整列するか。
     * `dpi` (float, 任意): ピクセル変換用 DPI。
     * `crop_bbox_pixels` (list[float], 任意): クロップ画像の [x0, y0, x1, y1] (px)。
   * **戻り値 (dict)**:
     * `status` (str): `"success"`。
-    * `total_curves` (int): 抽出・連結された曲線本数。
-    * `curves` (list[dict]): 各曲線データ。
+    * `total_curves` (int): 抽出・連結された曲線本数（単一描画モード時）。
+    * `curves` (list[dict]): 各曲線データ（単一描画モード時）。
       * `curve_index` (int): 0から始まる曲線番号。
       * `item_indices` (list[int]): 構成アイテム番号リスト。
       * `num_points` (int): サンプリング点数。
       * `bounds` (list[float]): [min_x, min_y, max_x, max_y]。
       * `points` (list[list[float]]): サンプリングされた [[x, y], ...] 座標列。
+    * `total_drawings` (int): マッチした描画オブジェクト総数（`extract_all_matching=True` 時）。
+    * `drawings` (list[dict]): 各描画オブジェクト内の曲線群（`extract_all_matching=True` 時）。
 
 ---
 
-### Tool 8: `calibrate_and_convert_coordinates`
+### Tool 10: `calibrate_and_convert_coordinates`
 
 * **ツール関数名**: `calibrate_and_convert_coordinates`
 * **内部使用モジュール**: `numpy`, `pandas`, `math`
 * **役割・機能**:
 既知の基準点（ピクセル座標と実数値の対応点）をもとに線形または対数スケール変換を行い、実世界ドメインの数値データテーブルを CSV 形式で出力します。
-出力 CSV の列名指定（`column_names`）、単一曲線のラベル付与（`curve_label`）、および複数曲線（`curves`）の一括統合変換に対応します。
+出力 CSV の列名指定（`column_names`）、単一曲線のラベル付与（`curve_label`）、および複数曲線（`curves`）の一括統合変換に対応します。各曲線辞書は `label` に加え、`name` または `curve_name` も曲線識別子として柔軟に受理します。
 * **OpenAI Function Calling 定義 (JSON Schema)**:
 
 ```json
@@ -572,7 +772,7 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
       "curves": {
         "type": "array",
         "items": {"type": "object"},
-        "description": "Optional list of curve dicts each having 'points' list."
+        "description": "Optional list of curve dicts each having 'points' list and label/name/curve_name."
       },
       "column_names": {
         "type": "array",
@@ -619,7 +819,7 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
     * `x_calibration`, `y_calibration`: 座標マッピング定義（pixel_refs, val_refs, scale_type）。
     * `output_csv_path` (str): 出力 CSV パス。
     * `pixel_points` (list[list[float]], 任意): 単一曲線のピクセル座標列。
-    * `curves` (list[dict], 任意): 複数曲線の辞書リスト。
+    * `curves` (list[dict], 任意): 複数曲線の辞書リスト（`label`, `name`, `curve_name` のいずれかでラベル指定可能）。
     * `column_names` (list[str], 初期値: `["x", "y"]`): CSV の X/Y 列名。
     * `curve_label` (str, 任意): 単一曲線時のラベル名。
   * **戻り値 (dict)**:
@@ -630,7 +830,7 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
 
 ---
 
-### Tool 9: `render_verification_overlay`
+### Tool 11: `render_verification_overlay`
 
 * **ツール関数名**: `render_verification_overlay`
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`, `pandas`
@@ -713,19 +913,19 @@ digitize_agent/
 ├─ src/
 │    └─ digitize_agent/
 │          ├─ __init__.py
-│          ├─ server.py        # MCP (Model Context Protocol) サーバー実装 (全9ツール)
-│          ├─ schema.py        # OpenAI Function Calling 互換 JSON Schema 定義 (全9ツール)
+│          ├─ server.py        # MCP (Model Context Protocol) サーバー実装 (全11ツール)
+│          ├─ schema.py        # OpenAI Function Calling 互換 JSON Schema 定義 (全11ツール)
 │          ├─ registry.py      # 関数ディスパッチャー (名前と実関数の安全な実行管理)
 │          └─ tools/           # 各デジタイズツールの実装
 │                ├─ __init__.py
-│                ├─ pdf_tools.py          # Tool 1: inspect_pdf_primitives
-│                ├─ image_transforms.py   # Tool 2: crop_and_transform_region
-│                ├─ geometry_detect.py    # Tool 3: detect_axes_and_ticks
-│                ├─ ocr_tools.py          # Tool 4: ocr_region_text
-│                ├─ color_extractor.py    # Tool 5: detect_plot_colors, Tool 6: extract_plot_pixels_by_color
-│                ├─ vector_curves.py      # Tool 7: extract_vector_curve_points
-│                ├─ calibration.py        # Tool 8: calibrate_and_convert_coordinates
-│                └─ visual_verifier.py    # Tool 9: render_verification_overlay
+│                ├─ pdf_tools.py          # Tool 1: inspect, Tool 2: search_pdf_primitives
+│                ├─ image_transforms.py   # Tool 3: crop_and_transform_region
+│                ├─ geometry_detect.py    # Tool 4: detect_axes, Tool 5: detect_legend_region
+│                ├─ ocr_tools.py          # Tool 6: ocr_region_text (PDFフォールバック)
+│                ├─ color_extractor.py    # Tool 7: detect_colors, Tool 8: extract_plot_pixels
+│                ├─ vector_curves.py      # Tool 9: extract_vector_curve_points
+│                ├─ calibration.py        # Tool 10: calibrate_and_convert_coordinates
+│                └─ visual_verifier.py    # Tool 11: render_verification_overlay
 └─ tests/                      # 単体テストスイート (pytest)
       ├─ conftest.py           # 合成データ・テストフィクスチャ
       ├─ test_pdf_tools.py
@@ -751,7 +951,7 @@ digitize_agent/
 
 ## 5. MCP (Model Context Protocol) サーバー仕様
 
-本ツール群はローカルの MCP サーバーとして起動し、Claude Desktop や各種 AI コーディングエージェント（Antigravity 等）から stdio 経由で呼び出すことが可能です。全 9 種類のツール関数が標準公開されます。
+本ツール群はローカルの MCP サーバーとして起動し、Claude Desktop や各種 AI コーディングエージェント（Antigravity 等）から stdio 経由で呼び出すことが可能です。全 11 種類のツール関数が標準公開されます。
 
 ### サーバー起動方法
 

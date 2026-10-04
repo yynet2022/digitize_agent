@@ -170,3 +170,177 @@ def detect_axes_and_ticks(
         "x_tick_candidates": sorted(x_ticks),
         "y_tick_candidates": sorted(y_ticks),
     }
+
+
+class DetectLegendRegionInput(BaseModel):
+    """detect_legend_region 関数の入力バリデーションモデル。"""
+
+    image_path: str = Field(description="Path to the plot image file.")
+    plot_bbox: list[int] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description="Optional [x_min, y_min, x_max, y_max] of plot area.",
+    )
+
+
+def detect_legend_region(
+    image_path: str,
+    plot_bbox: list[int] | None = None,
+) -> dict[str, Any]:
+    """プロット画像から凡例（Legend）領域の矩形を検出する。
+
+    Args:
+        image_path: 対象グラフ画像のファイルパス。
+        plot_bbox: プロット枠の矩形 [x_min, y_min, x_max, y_max]。
+
+    Returns:
+        dict[str, Any]: 検出された凡例矩形 [x_min, y_min, x_max, y_max]
+            および信頼度スコア。
+    """
+    try:
+        validated = DetectLegendRegionInput(
+            image_path=image_path,
+            plot_bbox=plot_bbox,
+        )
+    except Exception as exc:
+        return {"status": "error", "message": f"Validation error: {exc}"}
+
+    img_path = Path(validated.image_path)
+    if not img_path.is_file():
+        return {
+            "status": "error",
+            "message": f"Plot image not found: {validated.image_path}",
+        }
+
+    image = cv2.imread(str(img_path))
+    if image is None:
+        return {
+            "status": "error",
+            "message": f"Failed to load image: {validated.image_path}",
+        }
+
+    height, width = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # プロット枠の決定
+    if validated.plot_bbox is not None:
+        px0, py0, px1, py1 = validated.plot_bbox
+    else:
+        # プロット領域の概算
+        axes_info = detect_axes_and_ticks(validated.image_path)
+        if axes_info.get("status") != "error":
+            px0 = axes_info["y_axis"]["x_pixel"]
+            py1 = axes_info["x_axis"]["y_pixel"]
+            px1 = axes_info["x_axis"]["x_range"][1]
+            py0 = axes_info["y_axis"]["y_range"][0]
+        else:
+            px0 = int(width * 0.1)
+            py0 = int(height * 0.1)
+            px1 = int(width * 0.9)
+            py1 = int(height * 0.9)
+
+    plot_w = max(1, px1 - px0)
+    plot_h = max(1, py1 - py0)
+    plot_area = plot_w * plot_h
+
+    # エッジ・輪郭による凡例矩形枠の検出
+    edges = cv2.Canny(gray, 50, 150)
+    contours, _ = cv2.findContours(
+        edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    candidate_boxes: list[dict[str, Any]] = []
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < 800 or area > plot_area * 0.5:
+            continue
+
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+
+        # 4〜8頂点の凸多角形（矩形枠）を検査
+        if 4 <= len(approx) <= 8:
+            x, y, w, h = cv2.boundingRect(cnt)
+            # プロット枠の内側にあるか確認
+            if (
+                x >= px0 - 5
+                and y >= py0 - 5
+                and (x + w) <= px1 + 5
+                and (y + h) <= py1 + 5
+            ):
+                aspect = w / float(h)
+                if 1.0 <= aspect <= 6.0 and w >= 50 and h >= 30:
+                    score = min(1.0, area / (plot_area * 0.15))
+                    candidate_boxes.append(
+                        {
+                            "bbox": [int(x), int(y), int(x + w), int(y + h)],
+                            "area": int(area),
+                            "confidence": round(float(score), 3),
+                        }
+                    )
+
+    if candidate_boxes:
+        # 最も確度の高いボックス（面積とアスペクト比でソート）
+        candidate_boxes.sort(key=lambda b: b["area"], reverse=True)
+        best = candidate_boxes[0]
+        return {
+            "status": "success",
+            "legend_detected": True,
+            "legend_bbox": best["bbox"],
+            "confidence": best["confidence"],
+            "candidates_count": len(candidate_boxes),
+        }
+
+    # 枠線がない場合：プロット枠内のテキスト密度・色シンボル分布から探索
+    # モルフォロジー演算でテキスト塊を連結
+    _, bin_inv = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+    t_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    text_blobs = cv2.morphologyEx(bin_inv, cv2.MORPH_CLOSE, t_kernel)
+
+    roi = np.zeros_like(text_blobs)
+    roi[py0:py1, px0:px1] = text_blobs[py0:py1, px0:px1]
+
+    sub_cnts, _ = cv2.findContours(
+        roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    text_rects = []
+    for sc in sub_cnts:
+        sx, sy, sw, sh = cv2.boundingRect(sc)
+        if 20 <= sw <= plot_w * 0.5 and 8 <= sh <= 40:
+            text_rects.append([sx, sy, sx + sw, sy + sh])
+
+    # 複数テキストが縦方向に並んでいるクラスタ（凡例リスト）を探索
+    if len(text_rects) >= 2:
+        # 近接するテキスト矩形群を統合
+        tx0 = min(r[0] for r in text_rects)
+        ty0 = min(r[1] for r in text_rects)
+        tx1 = max(r[2] for r in text_rects)
+        ty1 = max(r[3] for r in text_rects)
+        # 余白を持たせる
+        pad_x = 10
+        pad_y = 5
+        leg_box = [
+            max(px0, tx0 - pad_x),
+            max(py0, ty0 - pad_y),
+            min(px1, tx1 + pad_x),
+            min(py1, ty1 + pad_y),
+        ]
+        return {
+            "status": "success",
+            "legend_detected": True,
+            "legend_bbox": leg_box,
+            "confidence": 0.65,
+            "candidates_count": 1,
+        }
+
+    return {
+        "status": "success",
+        "legend_detected": False,
+        "legend_bbox": None,
+        "confidence": 0.0,
+        "candidates_count": 0,
+    }

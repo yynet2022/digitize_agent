@@ -128,3 +128,66 @@ def test_extract_vector_curve_points_real_pdf() -> None:
     assert res["status"] == "success"
     # 3本の連続曲線 (V_GS 大, 中, 小) に自動連結されること
     assert res["total_curves"] == 3
+
+
+def test_vector_curves_min_length_and_color(tmp_path: Path) -> None:
+    """min_length による微小目盛り線除外と stroke_color 絞り込みを検証。"""
+    import pymupdf as fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=300)
+
+    # 1. 短い目盛り線 (黒、長さ 4 pt)
+    s1 = page.new_shape()
+    s1.draw_line(fitz.Point(10, 10), fitz.Point(14, 10))
+    s1.finish(color=(0, 0, 0), width=1.0)
+    s1.commit()
+
+    # 2. 長い主曲線 (青、長さ 80 pt)
+    s2 = page.new_shape()
+    s2.draw_line(fitz.Point(20, 20), fitz.Point(100, 20))
+    s2.finish(color=(0, 0, 1), width=1.0)
+    s2.commit()
+
+    pdf_path = tmp_path / "filter_test.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+
+    # min_length=10.0 で短い目盛り線がスキップされること
+    res_len = extract_vector_curve_points(
+        pdf_path=str(pdf_path),
+        page_number=0,
+        curve_types=["l"],
+        min_length=10.0,
+    )
+    assert res_len.get("status") == "success"
+    assert res_len["total_curves"] >= 1
+    # 抽出されたのは長い主曲線 (長さ 80)
+    assert all(
+        abs(c["bounds"][2] - c["bounds"][0] - 80) < 1e-3
+        for c in res_len["curves"]
+    )
+
+    # stroke_color=[0, 0, 1] で青色のみ抽出されること
+    res_col = extract_vector_curve_points(
+        pdf_path=str(pdf_path),
+        page_number=0,
+        curve_types=["l"],
+        stroke_color=[0.0, 0.0, 1.0],
+    )
+    assert res_col.get("status") == "success"
+    assert res_col["total_curves"] >= 1
+    assert all(
+        abs(c["bounds"][2] - c["bounds"][0] - 80) < 1e-3
+        for c in res_col["curves"]
+    )
+
+    # extract_all_matching=True で全描画リストが返ること
+    res_all = extract_vector_curve_points(
+        pdf_path=str(pdf_path),
+        page_number=0,
+        curve_types=["l"],
+        extract_all_matching=True,
+    )
+    assert res_all.get("status") == "success"
+    assert res_all["total_drawings"] >= 2

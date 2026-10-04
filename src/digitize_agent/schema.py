@@ -3,6 +3,8 @@
 デジタイズエージェントで利用可能な全 9 ツールの JSON Schema 定義を提供します。
 """
 
+import json
+from pathlib import Path
 from typing import Any
 
 INSPECT_PDF_PRIMITIVES_SCHEMA: dict[str, Any] = {
@@ -36,6 +38,40 @@ INSPECT_PDF_PRIMITIVES_SCHEMA: dict[str, Any] = {
             },
         },
         "required": ["pdf_path"],
+    },
+}
+
+SEARCH_PDF_PRIMITIVES_SCHEMA: dict[str, Any] = {
+    "name": "search_pdf_primitives",
+    "description": (
+        "Search text keywords (e.g. 'Figure 5', 'Fig.') across all PDF pages "
+        "and return matched pages, bounding boxes, and surrounding snippets."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pdf_path": {
+                "type": "string",
+                "description": "Path to the local PDF file.",
+            },
+            "query": {
+                "type": "string",
+                "description": (
+                    "Search text keyword or phrase (e.g. 'Figure 5', 'Table')."
+                ),
+            },
+            "case_sensitive": {
+                "type": "boolean",
+                "description": "Whether the search is case-sensitive.",
+                "default": False,
+            },
+            "max_matches": {
+                "type": "integer",
+                "description": "Maximum number of matches to return.",
+                "default": 50,
+            },
+        },
+        "required": ["pdf_path", "query"],
     },
 }
 
@@ -123,11 +159,38 @@ DETECT_AXES_AND_TICKS_SCHEMA: dict[str, Any] = {
     },
 }
 
+DETECT_LEGEND_REGION_SCHEMA: dict[str, Any] = {
+    "name": "detect_legend_region",
+    "description": (
+        "Automatically detect legend box bounds [x_min, y_min, x_max, y_max] "
+        "inside a plot image to enable masking or legend isolation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": "Path to the cropped plot image file.",
+            },
+            "plot_bbox": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "Optional [x_min, y_min, x_max, y_max] of plot."
+                ),
+            },
+        },
+        "required": ["image_path"],
+    },
+}
+
 OCR_REGION_TEXT_SCHEMA: dict[str, Any] = {
     "name": "ocr_region_text",
     "description": (
-        "Execute OCR on an image snippet to recognize axis labels, "
-        "tick numbers, or table cell contents."
+        "Execute OCR on an image snippet or directly extract native vector "
+        "text from a PDF page region as fallback."
     ),
     "parameters": {
         "type": "object",
@@ -135,6 +198,22 @@ OCR_REGION_TEXT_SCHEMA: dict[str, Any] = {
             "image_path": {
                 "type": "string",
                 "description": "Path to the cropped snippet image.",
+            },
+            "pdf_path": {
+                "type": "string",
+                "description": "Optional PDF path for native text fallback.",
+            },
+            "page_number": {
+                "type": "integer",
+                "description": "0-indexed PDF page number.",
+                "default": 0,
+            },
+            "bbox": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Bounding box [x0, y0, x1, y1] in points.",
             },
             "psm": {
                 "type": "integer",
@@ -146,7 +225,6 @@ OCR_REGION_TEXT_SCHEMA: dict[str, Any] = {
                 "description": "Optional character whitelist for OCR.",
             },
         },
-        "required": ["image_path"],
     },
 }
 
@@ -182,7 +260,8 @@ EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA: dict[str, Any] = {
     "name": "extract_plot_pixels_by_color",
     "description": (
         "Filter and extract pixel coordinates for data lines or markers of a "
-        "specified color using presets or HSV thresholds."
+        "specified color using presets, RGB/Hex, or HSV thresholds, with "
+        "bounding box masking and legend exclusion."
     ),
     "parameters": {
         "type": "object",
@@ -193,8 +272,37 @@ EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA: dict[str, Any] = {
             },
             "color_preset": {
                 "type": "string",
-                "enum": ["blue", "red", "green", "orange", "black"],
+                "enum": [
+                    "blue",
+                    "red",
+                    "green",
+                    "orange",
+                    "black",
+                    "cyan",
+                    "magenta",
+                    "yellow",
+                    "purple",
+                    "brown",
+                    "pink",
+                    "gray",
+                ],
                 "description": "Preset color name for quick extraction.",
+            },
+            "target_rgb": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 3,
+                "maxItems": 3,
+                "description": "Target color in RGB [R, G, B] (0-255 each).",
+            },
+            "target_hex": {
+                "type": "string",
+                "description": "Target color in hex format (e.g. '#0072BD').",
+            },
+            "color_tolerance": {
+                "type": "number",
+                "description": "Tolerance factor (0.01-0.5) for RGB/Hex.",
+                "default": 0.15,
             },
             "hsv_lower": {
                 "type": "array",
@@ -209,6 +317,23 @@ EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA: dict[str, Any] = {
                 "minItems": 3,
                 "maxItems": 3,
                 "description": "HSV upper bound [H, S, V].",
+            },
+            "bbox": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Extraction bbox [x_min, y_min, x_max, y_max].",
+            },
+            "exclude_bboxes": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 4,
+                    "maxItems": 4,
+                },
+                "description": "List of bounding boxes to mask out.",
             },
             "extract_mode": {
                 "type": "string",
@@ -225,7 +350,8 @@ EXTRACT_VECTOR_CURVE_POINTS_SCHEMA: dict[str, Any] = {
     "name": "extract_vector_curve_points",
     "description": (
         "Sample dense coordinate points from vector Bézier curves or lines "
-        "inside a PDF drawing, with auto-chaining and crop transformation."
+        "inside a PDF drawing, with auto-chaining, crop transformation, "
+        "and color/length filtering."
     ),
     "parameters": {
         "type": "object",
@@ -289,6 +415,32 @@ EXTRACT_VECTOR_CURVE_POINTS_SCHEMA: dict[str, Any] = {
                 "minItems": 4,
                 "maxItems": 4,
                 "description": "Optional [x0, y0, x1, y1] crop offset in px.",
+            },
+            "min_length": {
+                "type": "number",
+                "description": (
+                    "Minimum path length in points to filter noise."
+                ),
+                "default": 0.0,
+            },
+            "stroke_color": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 3,
+                "maxItems": 4,
+                "description": (
+                    "Target stroke color [R, G, B] (0.0-1.0 or 0-255)."
+                ),
+            },
+            "color_tolerance": {
+                "type": "number",
+                "description": "Tolerance factor for matching stroke_color.",
+                "default": 0.15,
+            },
+            "extract_all_matching": {
+                "type": "boolean",
+                "description": "Return curves from all matching drawings.",
+                "default": False,
             },
         },
         "required": ["pdf_path"],
@@ -400,8 +552,10 @@ RENDER_VERIFICATION_OVERLAY_SCHEMA: dict[str, Any] = {
 
 ALL_SCHEMAS: list[dict[str, Any]] = [
     INSPECT_PDF_PRIMITIVES_SCHEMA,
+    SEARCH_PDF_PRIMITIVES_SCHEMA,
     CROP_AND_TRANSFORM_REGION_SCHEMA,
     DETECT_AXES_AND_TICKS_SCHEMA,
+    DETECT_LEGEND_REGION_SCHEMA,
     OCR_REGION_TEXT_SCHEMA,
     DETECT_PLOT_COLORS_SCHEMA,
     EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA,
@@ -413,3 +567,24 @@ ALL_SCHEMAS: list[dict[str, Any]] = [
 SCHEMAS_BY_NAME: dict[str, dict[str, Any]] = {
     schema["name"]: schema for schema in ALL_SCHEMAS
 }
+
+
+def export_schemas_to_directory(target_dir: str | Path) -> list[Path]:
+    """登録されている全ツールスキーマを個別の JSON ファイルとして書き出す。
+
+    Args:
+        target_dir: 出力先ディレクトリパス。
+
+    Returns:
+        list[Path]: 生成された JSON ファイルパスのリスト。
+    """
+    out_dir = Path(target_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    exported: list[Path] = []
+    for schema in ALL_SCHEMAS:
+        tool_name = schema["name"]
+        file_path = out_dir / f"{tool_name}.json"
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(schema, f, indent=2, ensure_ascii=False)
+        exported.append(file_path)
+    return exported

@@ -180,7 +180,12 @@ def calibrate_and_convert_coordinates(
                     validated.x_calibration,
                     validated.y_calibration,
                 )
-                c_lbl = c_dict.get("label") or f"curve_{idx}"
+                c_lbl = (
+                    c_dict.get("label")
+                    or c_dict.get("name")
+                    or c_dict.get("curve_name")
+                    or f"curve_{idx}"
+                )
                 c_df = pd.DataFrame(
                     {col_x: xs, col_y: ys, "curve": [c_lbl] * len(xs)}
                 )

@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import pymupdf as fitz
 import pytesseract
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -17,7 +18,20 @@ from pytesseract import Output
 class OcrRegionTextInput(BaseModel):
     """ocr_region_text 関数の入力バリデーションモデル。"""
 
-    image_path: str = Field(description="Path to the image snippet file.")
+    image_path: str | None = Field(
+        default=None, description="Path to the image snippet file."
+    )
+    pdf_path: str | None = Field(
+        default=None,
+        description="Optional PDF file path for native vector text fallback.",
+    )
+    page_number: int = Field(default=0, ge=0, description="0-indexed page.")
+    bbox: list[float] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description="Bounding box [x0, y0, x1, y1] in points.",
+    )
     psm: int = Field(
         default=6,
         ge=0,
@@ -52,15 +66,54 @@ def _ensure_tesseract_configured() -> bool:
     return False
 
 
+def _extract_text_from_pdf_region(
+    pdf_path: str,
+    page_number: int,
+    bbox: list[float] | None = None,
+) -> dict[str, Any]:
+    """PDF 内部のテキストオブジェクトから指定矩形領域内の文字を抽出する。"""
+    try:
+        with fitz.open(pdf_path) as doc:
+            if page_number >= len(doc):
+                return {
+                    "status": "error",
+                    "message": f"Page number {page_number} out of range.",
+                }
+            page = doc[page_number]
+            if bbox:
+                rect = fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3])
+                text = page.get_text("text", clip=rect).strip()
+            else:
+                text = page.get_text("text").strip()
+
+            clean_text = " ".join(text.split())
+            return {
+                "text": text,
+                "clean_text": clean_text,
+                "confidence": 100.0,
+            }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"PDF text fallback failed: {exc}",
+        }
+
+
 def ocr_region_text(
-    image_path: str,
+    image_path: str | None = None,
+    pdf_path: str | None = None,
+    page_number: int = 0,
+    bbox: list[float] | None = None,
     psm: int = 6,
     whitelist: str | None = None,
 ) -> dict[str, Any]:
-    """画像スニペットに対して Tesseract OCR を実行し認識結果を返す。
+    """画像スニペットまたは PDF 領域からテキストを認識・抽出する。
 
     Args:
         image_path: 入力画像のファイルパス。
+        pdf_path: フォールバックまたは直接取得用 PDF パス。
+        page_number: PDF 対象ページ番号。
+        bbox: PDF 内の抽出矩形 [x0, y0, x1, y1] (pt単位)。
         psm: Tesseract PSM モード番号。
         whitelist: 認識対象を限定する文字ホワイトリスト。
 
@@ -70,11 +123,33 @@ def ocr_region_text(
     try:
         validated = OcrRegionTextInput(
             image_path=image_path,
+            pdf_path=pdf_path,
+            page_number=page_number,
+            bbox=bbox,
             psm=psm,
             whitelist=whitelist,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
+
+    # PDF パスが指定されており、PDF からの直接テキスト抽出が
+    # 優先または可能な場合
+    if validated.pdf_path is not None:
+        p_obj = Path(validated.pdf_path)
+        if p_obj.is_file():
+            # Tesseract 未設定、または画像未指定の場合はフォールバック
+            if not _ensure_tesseract_configured() or not validated.image_path:
+                return _extract_text_from_pdf_region(
+                    pdf_path=str(p_obj),
+                    page_number=validated.page_number,
+                    bbox=validated.bbox,
+                )
+
+    if not validated.image_path:
+        return {
+            "status": "error",
+            "message": "Either image_path or valid pdf_path must be provided.",
+        }
 
     img_path = Path(validated.image_path)
     if not img_path.is_file():
@@ -84,11 +159,19 @@ def ocr_region_text(
         }
 
     if not _ensure_tesseract_configured():
+        # PDF があればフォールバックを試行
+        if validated.pdf_path and Path(validated.pdf_path).is_file():
+            return _extract_text_from_pdf_region(
+                pdf_path=validated.pdf_path,
+                page_number=validated.page_number,
+                bbox=validated.bbox,
+            )
         return {
             "status": "error",
             "message": (
                 "Tesseract OCR is not installed or not found in system PATH. "
-                "Please install tesseract-ocr on the system."
+                "Please install tesseract-ocr or provide pdf_path for "
+                "vector text fallback."
             ),
         }
 

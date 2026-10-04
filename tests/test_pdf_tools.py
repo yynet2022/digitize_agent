@@ -6,7 +6,10 @@ inspect_pdf_primitives の正常動作、フィルタリング、
 
 from pathlib import Path
 
-from digitize_agent.tools.pdf_tools import inspect_pdf_primitives
+from digitize_agent.tools.pdf_tools import (
+    inspect_pdf_primitives,
+    search_pdf_primitives,
+)
 
 
 def test_inspect_pdf_primitives_success(
@@ -86,3 +89,42 @@ def test_inspect_pdf_primitives_invalid_filter(
 
     assert res["status"] == "error"
     assert "Validation error" in res["message"]
+
+
+def test_search_pdf_primitives_success(
+    sample_pdf_with_text_and_lines: str,
+) -> None:
+    """PDF 内のキーワード検索で該当ページと bbox が正しく返ることを検証。"""
+    res = search_pdf_primitives(
+        pdf_path=sample_pdf_with_text_and_lines,
+        query="Sample Plot",
+    )
+    assert res.get("status") == "success"
+    assert res["total_matches"] >= 1
+    m0 = res["matches"][0]
+    assert m0["page_number"] == 0
+    assert len(m0["bbox"]) == 4
+    assert "Sample Plot" in m0["snippet"]
+
+
+def test_search_pdf_primitives_not_found(
+    sample_pdf_with_text_and_lines: str,
+) -> None:
+    """ヒットしないキーワードを指定した際に 0 件を返すことを検証。"""
+    res = search_pdf_primitives(
+        pdf_path=sample_pdf_with_text_and_lines,
+        query="NonExistentFigure999",
+    )
+    assert res.get("status") == "success"
+    assert res["total_matches"] == 0
+    assert len(res["matches"]) == 0
+
+
+def test_search_pdf_primitives_missing_file(temp_dir: Path) -> None:
+    """存在しない PDF ファイルを指定した際にエラーを返すことを検証。"""
+    res = search_pdf_primitives(
+        pdf_path=str(temp_dir / "missing.pdf"),
+        query="test",
+    )
+    assert res["status"] == "error"
+    assert "not found" in res["message"]

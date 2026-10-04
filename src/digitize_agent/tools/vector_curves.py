@@ -71,6 +71,63 @@ class ExtractVectorCurvePointsInput(BaseModel):
             "relative to this crop origin."
         ),
     )
+    min_length: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Minimum path length in points to filter out tick marks.",
+    )
+    stroke_color: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=4,
+        description="Target stroke color [R, G, B] (0.0-1.0 or 0-255).",
+    )
+    color_tolerance: float = Field(
+        default=0.15,
+        ge=0.01,
+        le=0.5,
+        description="Tolerance factor when matching stroke_color.",
+    )
+    extract_all_matching: bool = Field(
+        default=False,
+        description=(
+            "If True, return extracted curves from all matching drawings."
+        ),
+    )
+
+
+def _color_matches(
+    dwg_color: tuple[float, ...] | list[float] | None,
+    target_color: list[float],
+    tolerance: float = 0.15,
+) -> bool:
+    """描画色と対象色のRGBが許容誤差範囲内で一致するか判定する。"""
+    if dwg_color is None:
+        return False
+    t_rgb = [
+        c / 255.0 if any(v > 1.0 for v in target_color) else c
+        for c in target_color[:3]
+    ]
+    d_rgb = [
+        c / 255.0 if any(v > 1.0 for v in dwg_color) else c
+        for c in dwg_color[:3]
+    ]
+    if len(d_rgb) < 3 or len(t_rgb) < 3:
+        return False
+    diffs = [abs(d - t) for d, t in zip(d_rgb, t_rgb)]
+    return all(d <= tolerance for d in diffs)
+
+
+def _calc_segment_length(points: list[list[float]]) -> float:
+    """点列の折れ線長さを算出する。"""
+    if len(points) < 2:
+        return 0.0
+    total = 0.0
+    for i in range(len(points) - 1):
+        dx = points[i + 1][0] - points[i][0]
+        dy = points[i + 1][1] - points[i][1]
+        total += math.hypot(dx, dy)
+    return total
 
 
 def _eval_cubic_bezier(
@@ -250,6 +307,94 @@ def _chain_segments(
     return chains
 
 
+def _extract_curves_from_drawing(
+    drawing: dict[str, Any],
+    curve_types: list[str],
+    item_indices: list[int] | None,
+    curve_segments: list[list[int]] | None,
+    num_samples_per_segment: int,
+    sort_x_ascending: bool,
+    scale_factor: float,
+    crop_x0: float,
+    crop_y0: float,
+    dpi: float | None,
+    min_length: float = 0.0,
+) -> list[dict[str, Any]]:
+    """単一の描画辞書から曲線群を抽出してスケーリング変換する。"""
+    items = drawing.get("items", [])
+    item_map: dict[int, dict[str, Any]] = {}
+
+    for i, item in enumerate(items):
+        if item_indices and i not in item_indices:
+            continue
+
+        kind = item[0]
+        if kind not in curve_types:
+            continue
+
+        if kind == "c":
+            p0 = (float(item[1].x), float(item[1].y))
+            p1 = (float(item[2].x), float(item[2].y))
+            p2 = (float(item[3].x), float(item[3].y))
+            p3 = (float(item[4].x), float(item[4].y))
+            pts = _eval_cubic_bezier(p0, p1, p2, p3, num_samples_per_segment)
+        elif kind == "l":
+            p0 = (float(item[1].x), float(item[1].y))
+            p1 = (float(item[2].x), float(item[2].y))
+            pts = [[p0[0], p0[1]], [p1[0], p1[1]]]
+        else:
+            continue
+
+        if min_length > 0.0 and _calc_segment_length(pts) < min_length:
+            continue
+
+        item_map[i] = {"item_index": i, "points": pts}
+
+    if not item_map:
+        return []
+
+    if curve_segments:
+        chains = []
+        for group in curve_segments:
+            group_segs = [item_map[idx] for idx in group if idx in item_map]
+            if group_segs:
+                sub_chains = _chain_segments(
+                    group_segs, sort_x_ascending=sort_x_ascending
+                )
+                chains.extend(sub_chains)
+    else:
+        chains = _chain_segments(
+            list(item_map.values()), sort_x_ascending=sort_x_ascending
+        )
+
+    result_curves: list[dict[str, Any]] = []
+    for c_idx, ch in enumerate(chains):
+        transformed_pts: list[list[float]] = []
+        for pt in ch["points"]:
+            if dpi is not None:
+                px = pt[0] * scale_factor - crop_x0
+                py = pt[1] * scale_factor - crop_y0
+            else:
+                px = pt[0]
+                py = pt[1]
+            transformed_pts.append([round(px, 4), round(py, 4)])
+
+        xs = [p[0] for p in transformed_pts]
+        ys = [p[1] for p in transformed_pts]
+
+        result_curves.append(
+            {
+                "curve_index": c_idx,
+                "item_indices": ch["item_indices"],
+                "num_points": len(transformed_pts),
+                "bounds": [min(xs), min(ys), max(xs), max(ys)],
+                "points": transformed_pts,
+            }
+        )
+
+    return result_curves
+
+
 def extract_vector_curve_points(
     pdf_path: str,
     page_number: int = 0,
@@ -262,6 +407,10 @@ def extract_vector_curve_points(
     sort_x_ascending: bool = True,
     dpi: float | None = None,
     crop_bbox_pixels: list[float] | None = None,
+    min_length: float = 0.0,
+    stroke_color: list[float] | None = None,
+    color_tolerance: float = 0.15,
+    extract_all_matching: bool = False,
 ) -> dict[str, Any]:
     """PDF のベクター描画パスから曲線の座標列を抽出・サンプリングする。
 
@@ -280,6 +429,10 @@ def extract_vector_curve_points(
         sort_x_ascending: X座標を昇順に整列するかどうか。
         dpi: ピクセル変換用のレンダリング解像度 (DPI)。
         crop_bbox_pixels: クロップ画像の [x0, y0, x1, y1] (px単位)。
+        min_length: 目盛り等を除外する最小パス長 (pt単位)。
+        stroke_color: 抽出対象の線色 [R, G, B]。
+        color_tolerance: 線色照合時の許容誤差係数。
+        extract_all_matching: マッチする全描画を一括返却するかどうか。
 
     Returns:
         dict[str, Any]: 抽出された曲線データリスト、またはエラー情報。
@@ -297,6 +450,10 @@ def extract_vector_curve_points(
             sort_x_ascending=sort_x_ascending,
             dpi=dpi,
             crop_bbox_pixels=crop_bbox_pixels,
+            min_length=min_length,
+            stroke_color=stroke_color,
+            color_tolerance=color_tolerance,
+            extract_all_matching=extract_all_matching,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -328,112 +485,6 @@ def extract_vector_curve_points(
                     "message": "No vector drawings found on this page.",
                 }
 
-            # 対象 drawing の選定
-            target_drawing: dict[str, Any] | None = None
-            target_drawing_idx: int = -1
-
-            if validated.drawing_index is not None:
-                if 0 <= validated.drawing_index < len(drawings):
-                    target_drawing_idx = validated.drawing_index
-                    target_drawing = drawings[target_drawing_idx]
-                else:
-                    return {
-                        "status": "error",
-                        "message": (
-                            f"Drawing index {validated.drawing_index} out of "
-                            f"range (total drawings: {len(drawings)})."
-                        ),
-                    }
-            else:
-                # bbox_filter による探索、または対象曲線を含む描画の検索
-                matching_drawings: list[int] = []
-                for idx, dwg in enumerate(drawings):
-                    rect = dwg.get("rect")
-                    if validated.bbox_filter:
-                        bx0, by0, bx1, by1 = validated.bbox_filter
-                        if rect is None:
-                            continue
-                        if (
-                            rect.x1 < bx0
-                            or rect.x0 > bx1
-                            or rect.y1 < by0
-                            or rect.y0 > by1
-                        ):
-                            continue
-
-                    items_list = dwg.get("items", [])
-                    has_curves = any(
-                        it[0] in validated.curve_types for it in items_list
-                    )
-                    if has_curves:
-                        matching_drawings.append(idx)
-
-                if not matching_drawings:
-                    return {
-                        "status": "error",
-                        "message": (
-                            "No drawings containing requested curves found "
-                            "matching the criteria."
-                        ),
-                    }
-
-                target_drawing_idx = matching_drawings[0]
-                target_drawing = drawings[target_drawing_idx]
-
-            items = target_drawing.get("items", [])
-            item_map: dict[int, dict[str, Any]] = {}
-
-            for i, item in enumerate(items):
-                if validated.item_indices and i not in validated.item_indices:
-                    continue
-
-                kind = item[0]
-                if kind not in validated.curve_types:
-                    continue
-
-                if kind == "c":
-                    p0 = (float(item[1].x), float(item[1].y))
-                    p1 = (float(item[2].x), float(item[2].y))
-                    p2 = (float(item[3].x), float(item[3].y))
-                    p3 = (float(item[4].x), float(item[4].y))
-                    pts = _eval_cubic_bezier(
-                        p0, p1, p2, p3, validated.num_samples_per_segment
-                    )
-                    item_map[i] = {"item_index": i, "points": pts}
-                elif kind == "l":
-                    p0 = (float(item[1].x), float(item[1].y))
-                    p1 = (float(item[2].x), float(item[2].y))
-                    pts = [[p0[0], p0[1]], [p1[0], p1[1]]]
-                    item_map[i] = {"item_index": i, "points": pts}
-
-            if not item_map:
-                return {
-                    "status": "error",
-                    "message": (
-                        "No curve or line segments extracted from items."
-                    ),
-                }
-
-            # セグメントのグループ化（手動指定または自動連結）
-            if validated.curve_segments:
-                chains = []
-                for group in validated.curve_segments:
-                    group_segs = [
-                        item_map[idx] for idx in group if idx in item_map
-                    ]
-                    if group_segs:
-                        sub_chains = _chain_segments(
-                            group_segs,
-                            sort_x_ascending=validated.sort_x_ascending,
-                        )
-                        chains.extend(sub_chains)
-            else:
-                chains = _chain_segments(
-                    list(item_map.values()),
-                    sort_x_ascending=validated.sort_x_ascending,
-                )
-
-            # 座標スケーリングおよびクロップ原点オフセットの適用
             scale_factor = (
                 (validated.dpi / 72.0) if validated.dpi is not None else 1.0
             )
@@ -448,32 +499,137 @@ def extract_vector_curve_points(
                 else 0.0
             )
 
-            result_curves: list[dict[str, Any]] = []
-            for c_idx, ch in enumerate(chains):
-                transformed_pts: list[list[float]] = []
-                for pt in ch["points"]:
-                    if validated.dpi is not None:
-                        px = pt[0] * scale_factor - crop_x0
-                        py = pt[1] * scale_factor - crop_y0
-                    else:
-                        px = pt[0]
-                        py = pt[1]
-                    transformed_pts.append([round(px, 4), round(py, 4)])
-
-                xs = [p[0] for p in transformed_pts]
-                ys = [p[1] for p in transformed_pts]
-
-                result_curves.append(
-                    {
-                        "curve_index": c_idx,
-                        "item_indices": ch["item_indices"],
-                        "num_points": len(transformed_pts),
-                        "bounds": [min(xs), min(ys), max(xs), max(ys)],
-                        "points": transformed_pts,
+            # 対象 drawing の選定
+            if validated.drawing_index is not None:
+                if 0 <= validated.drawing_index < len(drawings):
+                    matching_drawings = [validated.drawing_index]
+                else:
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Drawing index {validated.drawing_index} out of "
+                            f"range (total drawings: {len(drawings)})."
+                        ),
                     }
-                )
+            else:
+                matching_drawings = []
+                for idx, dwg in enumerate(drawings):
+                    rect = dwg.get("rect")
+                    if validated.bbox_filter:
+                        bx0, by0, bx1, by1 = validated.bbox_filter
+                        if rect is None:
+                            continue
+                        if (
+                            rect.x1 < bx0
+                            or rect.x0 > bx1
+                            or rect.y1 < by0
+                            or rect.y0 > by1
+                        ):
+                            continue
 
-            d_rect = target_drawing.get("rect")
+                    if validated.stroke_color is not None:
+                        dwg_col = dwg.get("color")
+                        if not _color_matches(
+                            dwg_col,
+                            validated.stroke_color,
+                            validated.color_tolerance,
+                        ):
+                            continue
+
+                    items_list = dwg.get("items", [])
+                    has_curves = any(
+                        it[0] in validated.curve_types for it in items_list
+                    )
+                    if has_curves:
+                        matching_drawings.append(idx)
+
+            if not matching_drawings:
+                return {
+                    "status": "error",
+                    "message": (
+                        "No drawings containing requested curves found "
+                        "matching the criteria."
+                    ),
+                }
+
+            # 全描画一括抽出モード
+            if validated.extract_all_matching:
+                all_results: list[dict[str, Any]] = []
+                for d_idx in matching_drawings:
+                    dwg = drawings[d_idx]
+                    curves = _extract_curves_from_drawing(
+                        drawing=dwg,
+                        curve_types=validated.curve_types,
+                        item_indices=validated.item_indices,
+                        curve_segments=validated.curve_segments,
+                        num_samples_per_segment=(
+                            validated.num_samples_per_segment
+                        ),
+                        sort_x_ascending=validated.sort_x_ascending,
+                        scale_factor=scale_factor,
+                        crop_x0=crop_x0,
+                        crop_y0=crop_y0,
+                        dpi=validated.dpi,
+                        min_length=validated.min_length,
+                    )
+                    if curves:
+                        d_rect = dwg.get("rect")
+                        rect_l = (
+                            [d_rect.x0, d_rect.y0, d_rect.x1, d_rect.y1]
+                            if d_rect is not None
+                            else None
+                        )
+                        all_results.append(
+                            {
+                                "drawing_index": d_idx,
+                                "drawing_rect": rect_l,
+                                "stroke_color": dwg.get("color"),
+                                "total_curves": len(curves),
+                                "curves": curves,
+                            }
+                        )
+
+                return {
+                    "status": "success",
+                    "total_drawings": len(all_results),
+                    "drawings": all_results,
+                }
+
+            # 単一描画抽出モード (有効な曲線が得られる最初の描画を探索)
+            result_curves = []
+            target_idx = -1
+            target_dwg = None
+
+            for d_idx in matching_drawings:
+                dwg = drawings[d_idx]
+                curves = _extract_curves_from_drawing(
+                    drawing=dwg,
+                    curve_types=validated.curve_types,
+                    item_indices=validated.item_indices,
+                    curve_segments=validated.curve_segments,
+                    num_samples_per_segment=validated.num_samples_per_segment,
+                    sort_x_ascending=validated.sort_x_ascending,
+                    scale_factor=scale_factor,
+                    crop_x0=crop_x0,
+                    crop_y0=crop_y0,
+                    dpi=validated.dpi,
+                    min_length=validated.min_length,
+                )
+                if curves:
+                    result_curves = curves
+                    target_idx = d_idx
+                    target_dwg = dwg
+                    break
+
+            if not result_curves or target_dwg is None:
+                return {
+                    "status": "error",
+                    "message": (
+                        "No curve or line segments extracted from items."
+                    ),
+                }
+
+            d_rect = target_dwg.get("rect")
             rect_list = (
                 [d_rect.x0, d_rect.y0, d_rect.x1, d_rect.y1]
                 if d_rect is not None
@@ -482,7 +638,7 @@ def extract_vector_curve_points(
 
             return {
                 "status": "success",
-                "drawing_index": target_drawing_idx,
+                "drawing_index": target_idx,
                 "drawing_rect": rect_list,
                 "total_curves": len(result_curves),
                 "curves": result_curves,
