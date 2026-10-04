@@ -185,3 +185,81 @@ def test_calibrate_zero_division(temp_dir: Path) -> None:
 
     assert res["status"] == "error"
     assert "distinct" in res["message"]
+
+
+def test_calibrate_wide_format(temp_dir: Path) -> None:
+    """output_format='wide' で横持ち形式の CSV が出力されることを検証。"""
+    out_csv = str(temp_dir / "wide.csv")
+    x_calib = {"pixel_refs": [0.0, 100.0], "val_refs": [0.0, 10.0]}
+    y_calib = {"pixel_refs": [100.0, 0.0], "val_refs": [0.0, 50.0]}
+
+    curves = [
+        {"name": "c1", "points": [[0.0, 100.0], [50.0, 50.0]]},
+        {"name": "c2", "points": [[0.0, 50.0], [50.0, 0.0]]},
+    ]
+
+    res = calibrate_and_convert_coordinates(
+        curves=curves,
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+        output_format="wide",
+    )
+    assert res["status"] == "success"
+    df = pd.read_csv(out_csv)
+    assert "x" in df.columns
+    assert "c1" in df.columns
+    assert "c2" in df.columns
+    assert len(df) == 100
+
+
+def test_calibrate_resample_num_grid_points(temp_dir: Path) -> None:
+    """num_grid_points で指定点数の共通 X 格子に補間されることを検証。"""
+    out_csv = str(temp_dir / "resampled_pts.csv")
+    x_calib = {"pixel_refs": [0.0, 100.0], "val_refs": [0.0, 10.0]}
+    y_calib = {"pixel_refs": [100.0, 0.0], "val_refs": [0.0, 50.0]}
+
+    curves = [
+        {"name": "c1", "points": [[0.0, 100.0], [100.0, 0.0]]},
+        {"name": "c2", "points": [[20.0, 80.0], [80.0, 20.0]]},
+    ]
+
+    res = calibrate_and_convert_coordinates(
+        curves=curves,
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+        output_format="wide",
+        num_grid_points=11,
+    )
+    assert res["status"] == "success"
+    df = pd.read_csv(out_csv)
+    assert len(df) == 11
+    assert abs(df["x"].iloc[0] - 0.0) < 1e-4
+    assert abs(df["x"].iloc[-1] - 10.0) < 1e-4
+
+
+def test_calibrate_resample_explicit_grid(temp_dir: Path) -> None:
+    """resample_x_grid リストで明示的な X 格子に補間されることを検証。"""
+    out_csv = str(temp_dir / "resampled_grid.csv")
+    x_calib = {"pixel_refs": [0.0, 100.0], "val_refs": [0.0, 10.0]}
+    y_calib = {"pixel_refs": [100.0, 0.0], "val_refs": [0.0, 50.0]}
+
+    curves = [
+        {"name": "c1", "points": [[0.0, 100.0], [100.0, 0.0]]},
+        {"name": "c2", "points": [[0.0, 50.0], [100.0, 50.0]]},
+    ]
+
+    custom_x = [0.0, 2.5, 5.0, 7.5, 10.0]
+    res = calibrate_and_convert_coordinates(
+        curves=curves,
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+        output_format="wide",
+        resample_x_grid=custom_x,
+    )
+    assert res["status"] == "success"
+    df = pd.read_csv(out_csv)
+    assert len(df) == len(custom_x)
+    assert list(df["x"]) == custom_x

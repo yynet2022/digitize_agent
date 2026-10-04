@@ -1,6 +1,6 @@
 """OpenAI Function Calling 互換のツールスキーマ定義モジュール。
 
-デジタイズエージェントで利用可能な全 9 ツールの JSON Schema 定義を提供します。
+デジタイズエージェントで利用可能な全 12 ツールの JSON Schema 定義を提供します。
 """
 
 import json
@@ -109,6 +109,16 @@ CROP_AND_TRANSFORM_REGION_SCHEMA: dict[str, Any] = {
                 "maxItems": 4,
                 "description": "Bounding box [x_min, y_min, x_max, y_max].",
             },
+            "caption_bbox": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "Bounding box [x0, y0, x1, y1] in points of caption "
+                    "to auto-estimate figure region."
+                ),
+            },
             "bbox_mode": {
                 "type": "string",
                 "enum": ["pixel", "point"],
@@ -130,7 +140,7 @@ CROP_AND_TRANSFORM_REGION_SCHEMA: dict[str, Any] = {
                 "description": "Destination file path for the cropped image.",
             },
         },
-        "required": ["bbox", "output_path"],
+        "required": ["output_path"],
     },
 }
 
@@ -376,6 +386,19 @@ EXTRACT_VECTOR_CURVE_POINTS_SCHEMA: dict[str, Any] = {
                 "type": "integer",
                 "description": "Optional specific drawing index.",
             },
+            "drawing_indices": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Optional list of drawing indices to extract.",
+            },
+            "group_by_color": {
+                "type": "boolean",
+                "description": (
+                    "Group curves by stroke color, merging into "
+                    "unified curves."
+                ),
+                "default": False,
+            },
             "curve_types": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -447,6 +470,64 @@ EXTRACT_VECTOR_CURVE_POINTS_SCHEMA: dict[str, Any] = {
     },
 }
 
+AUTO_CALIBRATE_AXES_SCHEMA: dict[str, Any] = {
+    "name": "auto_calibrate_axes",
+    "description": (
+        "Automatically detect coordinate axes, tick marks, and nearby "
+        "numerical text in an image or PDF to derive calibration "
+        "parameters (pixel_refs, val_refs, scale_multiplier)."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": "Path to the cropped plot image file.",
+            },
+            "pdf_path": {
+                "type": "string",
+                "description": (
+                    "Optional path to original PDF for precise text reading."
+                ),
+            },
+            "page_number": {
+                "type": "integer",
+                "description": "0-indexed PDF page number.",
+                "default": 0,
+            },
+            "crop_bbox_points": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": (
+                    "Optional crop bounding box [x0, y0, x1, y1] in pt."
+                ),
+            },
+            "dpi": {
+                "type": "number",
+                "description": "Resolution of cropped image (default 300).",
+                "default": 300.0,
+            },
+            "x_tick_candidates": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": (
+                    "Optional pre-detected X tick pixel positions."
+                ),
+            },
+            "y_tick_candidates": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": (
+                    "Optional pre-detected Y tick pixel positions."
+                ),
+            },
+        },
+        "required": ["image_path"],
+    },
+}
+
 CALIBRATE_AND_CONVERT_COORDINATES_SCHEMA: dict[str, Any] = {
     "name": "calibrate_and_convert_coordinates",
     "description": (
@@ -495,6 +576,28 @@ CALIBRATE_AND_CONVERT_COORDINATES_SCHEMA: dict[str, Any] = {
             "output_csv_path": {
                 "type": "string",
                 "description": "Destination file path for the CSV output.",
+            },
+            "output_format": {
+                "type": "string",
+                "enum": ["long", "wide"],
+                "description": (
+                    "Output CSV layout: 'long' (tidy) or 'wide' (matrix)."
+                ),
+                "default": "long",
+            },
+            "resample_x_grid": {
+                "type": "array",
+                "items": {"type": "number"},
+                "description": (
+                    "Optional explicit common X grid values for resampling."
+                ),
+            },
+            "num_grid_points": {
+                "type": "integer",
+                "description": (
+                    "Number of interpolation points for shared X grid."
+                ),
+                "default": 100,
             },
         },
         "required": [
@@ -556,6 +659,7 @@ ALL_SCHEMAS: list[dict[str, Any]] = [
     CROP_AND_TRANSFORM_REGION_SCHEMA,
     DETECT_AXES_AND_TICKS_SCHEMA,
     DETECT_LEGEND_REGION_SCHEMA,
+    AUTO_CALIBRATE_AXES_SCHEMA,
     OCR_REGION_TEXT_SCHEMA,
     DETECT_PLOT_COLORS_SCHEMA,
     EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA,

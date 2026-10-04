@@ -151,3 +151,23 @@ def test_crop_invalid_bbox(sample_plot_image: str, temp_dir: Path) -> None:
 
     assert res["status"] == "error"
     assert "Validation error" in res["message"]
+
+
+def test_crop_with_caption_bbox(
+    sample_pdf_with_text_and_lines: str, temp_dir: Path
+) -> None:
+    """caption_bbox から図表領域が自動推定されてクロップされることを検証。"""
+    out_path = str(temp_dir / "caption_auto_crop.png")
+    res = crop_and_transform_region(
+        pdf_path=sample_pdf_with_text_and_lines,
+        page_number=0,
+        caption_bbox=[50.0, 250.0, 200.0, 270.0],
+        output_path=out_path,
+    )
+
+    assert res["status"] == "success"
+    assert "estimated_bbox" in res
+    assert len(res["estimated_bbox"]) == 4
+    assert res["dimensions"]["width"] > 0
+    assert res["dimensions"]["height"] > 0
+    assert Path(out_path).is_file()

@@ -191,3 +191,65 @@ def test_vector_curves_min_length_and_color(tmp_path: Path) -> None:
     )
     assert res_all.get("status") == "success"
     assert res_all["total_drawings"] >= 2
+
+
+def test_extract_vector_curve_drawing_indices(tmp_path: Path) -> None:
+    """drawing_indices リストによる複数描画の一括抽出を検証。"""
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+
+    s0 = page.new_shape()
+    s0.draw_line(fitz.Point(10, 10), fitz.Point(50, 10))
+    s0.finish(color=(1, 0, 0), width=1)
+    s0.commit()
+
+    s1 = page.new_shape()
+    s1.draw_line(fitz.Point(50, 10), fitz.Point(90, 10))
+    s1.finish(color=(0, 0, 1), width=1)
+    s1.commit()
+
+    pdf_path = tmp_path / "indices_test.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+
+    res = extract_vector_curve_points(
+        pdf_path=str(pdf_path),
+        page_number=0,
+        curve_types=["l"],
+        drawing_indices=[0, 1],
+    )
+    assert res.get("status") == "success"
+    assert res["total_curves"] == 2
+
+
+def test_extract_vector_curve_group_by_color(tmp_path: Path) -> None:
+    """group_by_color=True により同色描画が統合されることを検証。"""
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+
+    s0 = page.new_shape()
+    s0.draw_line(fitz.Point(10, 20), fitz.Point(50, 20))
+    s0.finish(color=(0, 0, 1), width=1)
+    s0.commit()
+
+    s1 = page.new_shape()
+    s1.draw_line(fitz.Point(50, 20), fitz.Point(100, 20))
+    s1.finish(color=(0, 0, 1), width=1)
+    s1.commit()
+
+    pdf_path = tmp_path / "group_color_test.pdf"
+    doc.save(str(pdf_path))
+    doc.close()
+
+    res = extract_vector_curve_points(
+        pdf_path=str(pdf_path),
+        page_number=0,
+        curve_types=["l"],
+        drawing_indices=[0, 1],
+        group_by_color=True,
+    )
+    assert res.get("status") == "success"
+    assert res["total_groups"] == 1
+    group = res["color_grouped_curves"][0]
+    assert group["points"][0][0] == 10.0
+    assert group["points"][-1][0] == 100.0

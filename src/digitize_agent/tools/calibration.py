@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
@@ -61,6 +62,23 @@ class CalibrateCoordinatesInput(BaseModel):
     )
     output_csv_path: str = Field(
         description="Output CSV file path.",
+    )
+    resample_x_grid: list[float] | None = Field(
+        default=None,
+        description="Optional explicit common X grid values for resampling.",
+    )
+    num_grid_points: int | None = Field(
+        default=None,
+        ge=2,
+        le=5000,
+        description="Optional number of equidistant X grid points.",
+    )
+    output_format: Literal["long", "wide"] = Field(
+        default="long",
+        description=(
+            "Output CSV table layout: 'long' (X, Y, curve) or "
+            "'wide' (X, curve1, curve2...)."
+        ),
     )
 
 
@@ -129,6 +147,9 @@ def calibrate_and_convert_coordinates(
     curves: list[dict[str, Any]] | None = None,
     column_names: list[str] = ["x", "y"],
     curve_label: str | None = None,
+    resample_x_grid: list[float] | None = None,
+    num_grid_points: int | None = None,
+    output_format: Literal["long", "wide"] = "long",
 ) -> dict[str, Any]:
     """ピクセル座標列を実数値にマッピングし CSV ファイルとして出力する。
 
@@ -143,6 +164,9 @@ def calibrate_and_convert_coordinates(
         curves: 複数曲線のリスト（各要素は 'points' を保持）。
         column_names: 出力 CSV の X/Y 列名 (デフォルト ['x', 'y'])。
         curve_label: 単一曲線時のラベル名。
+        resample_x_grid: 共通 X 格子点リスト（リサンプリング用）。
+        num_grid_points: X 最小〜最大間の等間隔補間点数。
+        output_format: CSV 出力形式 ('long' または 'wide')。
 
     Returns:
         dict[str, Any]: 変換成功ステータス、件数、プレビュー、またはエラー。
@@ -156,6 +180,9 @@ def calibrate_and_convert_coordinates(
             x_calibration=AxisCalibration(**x_calibration),
             y_calibration=AxisCalibration(**y_calibration),
             output_csv_path=output_csv_path,
+            resample_x_grid=resample_x_grid,
+            num_grid_points=num_grid_points,
+            output_format=output_format,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -208,9 +235,68 @@ def calibrate_and_convert_coordinates(
                 "message": "No valid points to convert.",
             }
 
-        combined_df = (
-            pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+        need_resample = (
+            validated.resample_x_grid is not None
+            or validated.num_grid_points is not None
+            or validated.output_format == "wide"
         )
+
+        if need_resample:
+            if validated.resample_x_grid is not None:
+                target_x = np.array(validated.resample_x_grid, dtype=float)
+            elif validated.num_grid_points is not None:
+                all_x = np.concatenate([df[col_x].values for df in dfs])
+                target_x = np.linspace(
+                    float(np.min(all_x)),
+                    float(np.max(all_x)),
+                    validated.num_grid_points,
+                )
+            else:
+                all_x = np.concatenate([df[col_x].values for df in dfs])
+                target_x = np.linspace(
+                    float(np.min(all_x)), float(np.max(all_x)), 100
+                )
+
+            if validated.output_format == "wide":
+                wide_data: dict[str, Any] = {col_x: target_x.tolist()}
+                for idx, df in enumerate(dfs):
+                    lbl = (
+                        df["curve"].iloc[0]
+                        if "curve" in df.columns
+                        else f"curve_{idx}"
+                    )
+                    df_sorted = df.sort_values(by=col_x).drop_duplicates(
+                        subset=[col_x]
+                    )
+                    xp = df_sorted[col_x].values.astype(float)
+                    yp = df_sorted[col_y].values.astype(float)
+                    y_interp = np.interp(target_x, xp, yp)
+                    wide_data[str(lbl)] = y_interp.tolist()
+                combined_df = pd.DataFrame(wide_data)
+            else:
+                resampled_dfs: list[pd.DataFrame] = []
+                for df in dfs:
+                    lbl = (
+                        df["curve"].iloc[0] if "curve" in df.columns else None
+                    )
+                    df_sorted = df.sort_values(by=col_x).drop_duplicates(
+                        subset=[col_x]
+                    )
+                    xp = df_sorted[col_x].values.astype(float)
+                    yp = df_sorted[col_y].values.astype(float)
+                    y_interp = np.interp(target_x, xp, yp)
+                    r_dict: dict[str, Any] = {
+                        col_x: target_x.tolist(),
+                        col_y: y_interp.tolist(),
+                    }
+                    if lbl:
+                        r_dict["curve"] = [lbl] * len(target_x)
+                    resampled_dfs.append(pd.DataFrame(r_dict))
+                combined_df = pd.concat(resampled_dfs, ignore_index=True)
+        else:
+            combined_df = (
+                pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+            )
 
         out_path = Path(validated.output_csv_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)

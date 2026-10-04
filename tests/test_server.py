@@ -10,6 +10,7 @@ from pathlib import Path
 from digitize_agent.server import create_server
 
 EXPECTED_MCP_TOOLS = [
+    "auto_calibrate_axes",
     "calibrate_and_convert_coordinates",
     "crop_and_transform_region",
     "detect_axes_and_ticks",
@@ -25,7 +26,7 @@ EXPECTED_MCP_TOOLS = [
 
 
 def test_server_list_tools() -> None:
-    """MCP サーバーに仕様の全 11 ツールが登録されていることを検証する。"""
+    """MCP サーバーに仕様の全 12 ツールが登録されていることを検証する。"""
 
     async def _test() -> None:
         server = create_server()
@@ -33,7 +34,7 @@ def test_server_list_tools() -> None:
         tool_names = [t.name for t in tools]
         for expected in EXPECTED_MCP_TOOLS:
             assert expected in tool_names
-        assert len(tool_names) == 11
+        assert len(tool_names) == 12
 
     asyncio.run(_test())
 

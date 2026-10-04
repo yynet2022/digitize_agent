@@ -99,10 +99,13 @@ class ExtractPlotPixelsInput(BaseModel):
         description="Target color in hex format (e.g., '#0072BD', 'FF0000').",
     )
     color_tolerance: float = Field(
-        default=0.15,
-        ge=0.01,
-        le=0.5,
-        description="Tolerance factor (0.01-0.5) when matching RGB/Hex.",
+        default=35.0,
+        ge=0.001,
+        le=255.0,
+        description=(
+            "Color matching tolerance (0.01-1.0 normalized or "
+            "1.0-255.0 distance)."
+        ),
     )
     hsv_lower: list[int] | None = Field(
         default=None,
@@ -236,8 +239,13 @@ def extract_plot_pixels_by_color(
     # 2. RGB 指定の解決
     if resolved_rgb is not None and effective_lower is None:
         r, g, b = resolved_rgb
+        norm_tol = (
+            validated.color_tolerance / 255.0
+            if validated.color_tolerance > 1.0
+            else validated.color_tolerance
+        )
         effective_lower, effective_upper = _rgb_to_hsv_bounds(
-            (r, g, b), validated.color_tolerance
+            (r, g, b), norm_tol
         )
 
     # 3. プリセット指定の解決

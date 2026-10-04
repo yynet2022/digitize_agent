@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from digitize_agent.tools import (
+    auto_calibrate_axes,
     calibrate_and_convert_coordinates,
     crop_and_transform_region,
     detect_axes_and_ticks,
@@ -29,6 +30,7 @@ TOOL_REGISTRY: dict[str, ToolFunction] = {
     "crop_and_transform_region": crop_and_transform_region,
     "detect_axes_and_ticks": detect_axes_and_ticks,
     "detect_legend_region": detect_legend_region,
+    "auto_calibrate_axes": auto_calibrate_axes,
     "ocr_region_text": ocr_region_text,
     "detect_plot_colors": detect_plot_colors,
     "extract_plot_pixels_by_color": extract_plot_pixels_by_color,

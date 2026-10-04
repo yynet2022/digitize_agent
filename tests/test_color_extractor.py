@@ -185,3 +185,32 @@ def test_extract_cyan_preset(temp_dir: Path) -> None:
     )
     assert res.get("status") == "success"
     assert res["point_count"] >= 1
+
+
+def test_color_tolerance_auto_scaling(temp_dir: Path) -> None:
+    """color_tolerance が正規化値と 255 距離の両方で動作することを検証。"""
+    img = np.full((60, 60, 3), 255, dtype=np.uint8)
+    # BGR で (200, 20, 20) -> RGB (20, 20, 200) 赤み
+    img[25:35, 10:50] = (200, 20, 20)
+    img_path = str(temp_dir / "tolerance_test.png")
+    cv2.imwrite(img_path, img)
+
+    # 1. 0.0〜1.0 スケール (0.15)
+    res_norm = extract_plot_pixels_by_color(
+        image_path=img_path,
+        target_rgb=[20, 20, 200],
+        color_tolerance=0.15,
+        extract_mode="continuous_line",
+    )
+    assert res_norm.get("status") == "success"
+    assert res_norm["point_count"] > 0
+
+    # 2. 0〜255 スケール (40.0)
+    res_255 = extract_plot_pixels_by_color(
+        image_path=img_path,
+        target_rgb=[20, 20, 200],
+        color_tolerance=40.0,
+        extract_mode="continuous_line",
+    )
+    assert res_255.get("status") == "success"
+    assert res_255["point_count"] > 0

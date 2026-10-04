@@ -32,6 +32,10 @@ class ExtractVectorCurvePointsInput(BaseModel):
         ge=0,
         description="Optional index of a specific drawing to extract from.",
     )
+    drawing_indices: list[int] | None = Field(
+        default=None,
+        description="Optional list of specific drawing indices to extract.",
+    )
     curve_types: list[str] = Field(
         default=["c"],
         description="Element types to extract: 'c' for Bézier, 'l' for lines.",
@@ -92,6 +96,13 @@ class ExtractVectorCurvePointsInput(BaseModel):
         default=False,
         description=(
             "If True, return extracted curves from all matching drawings."
+        ),
+    )
+    group_by_color: bool = Field(
+        default=False,
+        description=(
+            "If True, groups matching drawings by stroke color and "
+            "merges curves."
         ),
     )
 
@@ -401,6 +412,7 @@ def extract_vector_curve_points(
     bbox_filter: list[float] | None = None,
     drawing_index: int | None = None,
     curve_types: list[str] = ["c"],
+    drawing_indices: list[int] | None = None,
     item_indices: list[int] | None = None,
     curve_segments: list[list[int]] | None = None,
     num_samples_per_segment: int = 50,
@@ -411,6 +423,7 @@ def extract_vector_curve_points(
     stroke_color: list[float] | None = None,
     color_tolerance: float = 0.15,
     extract_all_matching: bool = False,
+    group_by_color: bool = False,
 ) -> dict[str, Any]:
     """PDF のベクター描画パスから曲線の座標列を抽出・サンプリングする。
 
@@ -422,6 +435,7 @@ def extract_vector_curve_points(
         page_number: 0 から始まる対象ページ番号。
         bbox_filter: 描画抽出範囲 [x0, y0, x1, y1] (pt単位)。
         drawing_index: 特定の描画オブジェクト番号。
+        drawing_indices: 複数の特定描画オブジェクト番号リスト。
         curve_types: 抽出対象要素タイプ ('c' または 'l')。
         item_indices: 描画内の特定アイテム番号リスト。
         curve_segments: 曲線ごとにアイテム番号をグループ化したリスト。
@@ -433,6 +447,7 @@ def extract_vector_curve_points(
         stroke_color: 抽出対象の線色 [R, G, B]。
         color_tolerance: 線色照合時の許容誤差係数。
         extract_all_matching: マッチする全描画を一括返却するかどうか。
+        group_by_color: 色別に描画曲線を自動グループ化・統合するかどうか。
 
     Returns:
         dict[str, Any]: 抽出された曲線データリスト、またはエラー情報。
@@ -443,6 +458,7 @@ def extract_vector_curve_points(
             page_number=page_number,
             bbox_filter=bbox_filter,
             drawing_index=drawing_index,
+            drawing_indices=drawing_indices,
             curve_types=curve_types,
             item_indices=item_indices,
             curve_segments=curve_segments,
@@ -454,6 +470,7 @@ def extract_vector_curve_points(
             stroke_color=stroke_color,
             color_tolerance=color_tolerance,
             extract_all_matching=extract_all_matching,
+            group_by_color=group_by_color,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -500,7 +517,20 @@ def extract_vector_curve_points(
             )
 
             # 対象 drawing の選定
-            if validated.drawing_index is not None:
+            if validated.drawing_indices is not None:
+                matching_drawings = [
+                    idx
+                    for idx in validated.drawing_indices
+                    if 0 <= idx < len(drawings)
+                ]
+                if not matching_drawings:
+                    return {
+                        "status": "error",
+                        "message": (
+                            "None of the specified drawing_indices are valid."
+                        ),
+                    }
+            elif validated.drawing_index is not None:
                 if 0 <= validated.drawing_index < len(drawings):
                     matching_drawings = [validated.drawing_index]
                 else:
@@ -550,6 +580,86 @@ def extract_vector_curve_points(
                         "No drawings containing requested curves found "
                         "matching the criteria."
                     ),
+                }
+
+            # 色別グループ化一括統合モード
+            if validated.group_by_color:
+                color_groups: dict[str, dict[str, Any]] = {}
+                for d_idx in matching_drawings:
+                    dwg = drawings[d_idx]
+                    col = dwg.get("color")
+                    if col is None:
+                        col_key = "none"
+                        col_rgb = None
+                        col_hex = None
+                    else:
+                        r = int(round(col[0] * 255))
+                        g = int(round(col[1] * 255))
+                        b = int(round(col[2] * 255))
+                        col_key = f"{col[0]:.2f},{col[1]:.2f},{col[2]:.2f}"
+                        col_rgb = [r, g, b]
+                        col_hex = f"#{r:02X}{g:02X}{b:02X}"
+
+                    curves = _extract_curves_from_drawing(
+                        drawing=dwg,
+                        curve_types=validated.curve_types,
+                        item_indices=validated.item_indices,
+                        curve_segments=validated.curve_segments,
+                        num_samples_per_segment=(
+                            validated.num_samples_per_segment
+                        ),
+                        sort_x_ascending=validated.sort_x_ascending,
+                        scale_factor=scale_factor,
+                        crop_x0=crop_x0,
+                        crop_y0=crop_y0,
+                        dpi=validated.dpi,
+                        min_length=validated.min_length,
+                    )
+                    if not curves:
+                        continue
+
+                    if col_key not in color_groups:
+                        color_groups[col_key] = {
+                            "stroke_color": list(col) if col else None,
+                            "color_rgb": col_rgb,
+                            "color_hex": col_hex,
+                            "drawing_indices": [],
+                            "all_curves": [],
+                        }
+                    color_groups[col_key]["drawing_indices"].append(d_idx)
+                    color_groups[col_key]["all_curves"].extend(curves)
+
+                grouped_results = []
+                for entry in color_groups.values():
+                    merged_pts: list[list[float]] = []
+                    for c in entry["all_curves"]:
+                        merged_pts.extend(c["points"])
+                    if validated.sort_x_ascending and merged_pts:
+                        merged_pts.sort(key=lambda p: p[0])
+                        deduped = [merged_pts[0]]
+                        for p in merged_pts[1:]:
+                            if (
+                                abs(p[0] - deduped[-1][0]) > 1e-4
+                                or abs(p[1] - deduped[-1][1]) > 1e-4
+                            ):
+                                deduped.append(p)
+                        merged_pts = deduped
+
+                    grouped_results.append(
+                        {
+                            "stroke_color": entry["stroke_color"],
+                            "color_rgb": entry["color_rgb"],
+                            "color_hex": entry["color_hex"],
+                            "drawing_indices": entry["drawing_indices"],
+                            "total_points": len(merged_pts),
+                            "points": merged_pts,
+                        }
+                    )
+
+                return {
+                    "status": "success",
+                    "total_groups": len(grouped_results),
+                    "color_grouped_curves": grouped_results,
                 }
 
             # 全描画一括抽出モード

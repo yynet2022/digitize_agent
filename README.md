@@ -12,39 +12,42 @@ Claude Desktop や各種 AI コーディングアシスタント（Antigravity �
 
 * **完全ローカル & オフライン動作**: 外部通信なしで機密文書や未発表論文も安全に処理可能。
 * **MCP (Model Context Protocol) 標準対応**: FastMCP による stdio トランスポート対応。Claude Desktop や Antigravity 等に設定するだけで即座に連携。
-* **OpenAI Function Calling 互換**: 全 11 ツールの JSON Schema 定義（`schema.py`）および安全なディスパッチャ（`registry.py`）を完備。
+* **OpenAI Function Calling 互換**: 全 12 ツールの JSON Schema 定義（`schema.py`）および安全なディスパッチャ（`registry.py`）を完備。
 * **高精度な画像・ベクター処理パイプライン**:
   * PDF 内キーワード高速検索（`search_pdf_primitives`）による図表・キャプションの特定
+  * キャプション bbox からの直上図表領域自動推定（`crop_and_transform_region` のスマートオートクロップ）
   * デジタル PDF からのベクター線・埋め込みテキスト直接抽出（解像度劣化ゼロ）
-  * PDF ページからの直接レンダリング切り出し＆任意 DPI 指定（`crop_and_transform_region`）
+  * PDF ページからの直接レンダリング切り出し＆任意 DPI 指定
   * ハフ変換による傾き検出・自動補正 (Deskew) および CLAHE コントラスト強調
   * モルフォロジー演算とプロジェクションプロファイルによる直交座標軸・目盛りの自動特定
-  * プロット画像内の凡例矩形・テキスト塊の自動検出（`detect_legend_region`）
+  * 目盛り線と数値ラベルの幾何学的自動ペアリング校正（`auto_calibrate_axes`）によるワンストップ校正値推定
+  * プロット画像内の凡例枠・密集テキスト検出および項目代表色取得（`detect_legend_region`）
   * 電子 PDF の埋め込みベクターテキスト直接抽出を優先する OCR フォールバック（`ocr_region_text`）
   * 画像内の代表プロット色自動検知（`detect_plot_colors`）
-  * 12 色プリセット、RGB 配列、Hex 値、許容誤差、抽出領域・凡例除外領域指定による高精度色抽出（`extract_plot_pixels_by_color`）
-  * PDF 内部のベクター描画命令からの解析的座標サンプリング、微小目盛り線除外、ストローク色フィルタ、有効曲線自動探索（`extract_vector_curve_points`）
-  * 線形および対数（Log）スケール対応の座標キャリブレーション、物理量列名指定、複数曲線一括 CSV 出力（`label`/`name`/`curve_name` 対応）
+  * 12 色プリセット、RGB 配列、Hex 値、正規化/絶対距離の双方に対応した柔軟な許容誤差による高精度色抽出（`extract_plot_pixels_by_color`）
+  * PDF 内部のベクター描画命令からの座標抽出、複数描画の一括抽出（`drawing_indices`）、同一ストローク色描画の自動統合（`group_by_color`）
+  * 線形および対数（Log）スケール対応の座標キャリブレーション、複数曲線の共通 X 格子線形補間（`resample_x_grid`, `num_grid_points`）、横持ち（Wide: `x, c1, c2`）および縦持ち（Long: `x, y, curve`）CSV 出力
   * 複数曲線の自動色分けパレット描画と透過合成による適合度検証 (Visual Feedback)
 * **自己修復・エラー耐性**: パラメータ不正やファイル欠損時にもプロセスを落とさず、エージェントが再試行できる構造化エラーを返却。
-* **高いコード品質**: 全コードで PEP 8・最大行長 79 文字制限・型ヒント・docstring を遵守。全 62 件の単体テストをパス（テストカバレッジ 90% 以上）。
+* **高いコード品質**: 全コードで PEP 8・最大行長 79 文字制限・型ヒント・docstring を遵守。全 71 件の単体テストをパス（テストカバレッジ 90% 以上）。
 
 ---
 
-## 収録ツール一覧 (全 11 ツール)
+## 収録ツール一覧 (全 12 ツール)
 
 | ツール関数名 | 役割・機能概要 |
 | :--- | :--- |
 | `inspect_pdf_primitives` | PDF からラスター変換を経由せず、直接埋め込まれたテキスト要素（座標・フォントサイズ）およびベクター罫線を抽出 |
 | `search_pdf_primitives` | PDF 全体または特定ページから指定キーワードを検索し、出現ページ、bbox、文脈スニペットを返却 |
-| `crop_and_transform_region` | 画像ファイルまたは PDF ページから指定 DPI で領域を切り出し、傾き自動補正 (Deskew) やコントラスト強調 (CLAHE) を適用 |
+| `crop_and_transform_region` | 画像または PDF から指定 DPI で領域を切り出し（キャプション bbox からの図表領域自動推定に対応）、傾き自動補正 (Deskew) やコントラスト強調 (CLAHE) を適用 |
 | `detect_axes_and_ticks` | グラフ画像内の主軸（水平 X 軸・垂直 Y 軸）および目盛り線（Tick marks）のピクセル座標を検出 |
-| `detect_legend_region` | プロット画像内の凡例（Legend）枠や密集テキスト領域を検出し、プロット抽出時の除外領域 (exclude_bboxes) を特定 |
+| `detect_legend_region` | プロット画像内の凡例（Legend）枠や密集テキスト領域を検出し、プロット抽出時の除外領域 (exclude_bboxes) および各凡例項目の代表色 (legend_items) を特定 |
+| `auto_calibrate_axes` | 検出された目盛り線と近傍の数値テキスト（PDF埋め込みテキストまたはOCR）を幾何学的に自動照合し、X軸・Y軸のキャリブレーションパラメータ（pixel_refs, val_refs, scale_multiplier）をワンストップで自動推定 |
 | `ocr_region_text` | 切り出し画像スニペットに対して Tesseract OCR を実行（PDF指定時は電子埋め込みテキストの直接抽出を優先フォールバック） |
 | `detect_plot_colors` | 画像内の主要プロット色（色名、代表 HSV 値、画素占有率）を自動検出し、色抽出のための推奨設定を返却 |
-| `extract_plot_pixels_by_color` | 色プリセット（12色）、RGB配列、Hex値、許容誤差、除外領域指定に基づき指定色プロットのピクセル座標群を抽出 |
-| `extract_vector_curve_points` | PDF 内部のベクター描画命令から等間隔座標列をサンプリング。目盛り線除外、ストローク色指定、全描画一括抽出に対応 |
-| `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換し、列名指定や複数曲線を統合した CSV ファイルを出力 |
+| `extract_plot_pixels_by_color` | 色プリセット（12色）、RGB配列、Hex値、正規化/絶対距離の双方に対応した許容誤差、除外領域指定に基づき指定色プロットのピクセル座標群を抽出 |
+| `extract_vector_curve_points` | PDF 内部のベクター描画命令から等間隔座標列をサンプリング。複数描画一括抽出 (drawing_indices)、同色描画自動統合 (group_by_color)、目盛り線除外、ストローク色指定に対応 |
+| `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換。共通 X 格子への線形リサンプル、横持ち (wide) / 縦持ち (long) 形式の CSV 出力に対応 |
 | `render_verification_overlay` | デジタイズされた CSV データを元画像の座標系へ逆変換して複数曲線を自動色分けした半透明オーバーレイ画像を生成し、適合度指標を算出 |
 
 ---
@@ -124,7 +127,7 @@ Claude Desktop の設定ファイルに以下を追加します。
 }
 ```
 
-設定後、クライアントを再起動すると、全 11 種類のデジタイズツール群が自律的に呼び出せるようになります。
+設定後、クライアントを再起動すると、全 12 種類のデジタイズツール群が自律的に呼び出せるようになります。
 
 ---
 
@@ -132,66 +135,61 @@ Claude Desktop の設定ファイルに以下を追加します。
 
 Python スクリプト内から各ツール関数を直接呼び出すことも可能です。
 
-#### 例 A: PDF ベクターグラフのデジタイズ
+#### 例 A: PDF ベクターグラフのデジタイズ（自動校正・色別統合・横持ちCSV）
 
 ```python
 from digitize_agent.tools import (
-    crop_and_transform_region,
-    detect_axes_and_ticks,
-    extract_vector_curve_points,
+    auto_calibrate_axes,
     calibrate_and_convert_coordinates,
+    crop_and_transform_region,
+    extract_vector_curve_points,
     render_verification_overlay,
 )
 
-# 1. PDF ページから直接 300 DPI でグラフ領域を切り出し
+# 1. キャプション bbox から直上の図表領域を自動推定して 300 DPI でクロップ
 crop_res = crop_and_transform_region(
     pdf_path="paper.pdf",
     page_number=1,
     dpi=300.0,
-    bbox=[240, 60, 380, 200],
-    bbox_mode="point",  # PDF の pt 単位で指定
+    caption_bbox=[240, 210, 380, 225],  # キャプションの pt 座標
     output_path="output/fig_cropped.png",
 )
 
-# 2. 座標軸と目盛りのピクセル位置を検出
-axes_res = detect_axes_and_ticks(
+# 2. 目盛り線と数値ラベルを幾何学照合し、X軸・Y軸の校正値を全自動推定
+calib_auto = auto_calibrate_axes(
     image_path="output/fig_cropped.png",
-    min_line_length_ratio=0.3,
+    pdf_path="paper.pdf",
+    page_number=1,
+    crop_bbox_points=crop_res["estimated_bbox"],
+    dpi=300.0,
 )
+x_calib = calib_auto["x_calibration"]
+y_calib = calib_auto["y_calibration"]
 
-# 3. PDF 内部のベクター曲線（ベジェ曲線）から座標列をサンプリング
+# 3. 複数描画を一括抽出し、同一ストローク色ごとに自動統合
 vec_res = extract_vector_curve_points(
     pdf_path="paper.pdf",
     page_number=1,
-    drawing_index=31,
+    drawing_indices=[31, 32, 33],
+    group_by_color=True,
     dpi=300.0,
-    crop_bbox_pixels=[890, 225, 1610, 945],
 )
 
-# 4. 複数曲線を実数値に一括キャリブレーション変換し CSV 保存
-x_calib = {
-    "pixel_refs": [150.0, 657.0],
-    "val_refs": [0.0, 5.0],
-    "scale_type": "linear",
-}
-y_calib = {
-    "pixel_refs": [568.0, 61.0],
-    "val_refs": [0.0, 50.0],
-    "scale_type": "linear",
-}
-
+# 4. 複数曲線を共通 X 格子に補間し、横持ち (Wide) 形式で CSV 保存
 calib_res = calibrate_and_convert_coordinates(
-    curves=vec_res["curves"],
+    curves=vec_res["color_grouped_curves"],
     column_names=["V_DS_V", "I_DS_mA"],
     x_calibration=x_calib,
     y_calibration=y_calib,
-    output_csv_path="output/curves_all.csv",
+    output_csv_path="output/curves_wide.csv",
+    output_format="wide",
+    num_grid_points=100,
 )
 
 # 5. 複数曲線を色分けした透過オーバーレイ検証画像を生成
 verify_res = render_verification_overlay(
     original_image_path="output/fig_cropped.png",
-    csv_path="output/curves_all.csv",
+    csv_path="output/curves_wide.csv",
     x_calibration=x_calib,
     y_calibration=y_calib,
     output_overlay_path="output/verification_overlay.png",

@@ -89,3 +89,64 @@ def test_detect_legend_region_missing_file(temp_dir: Path) -> None:
     res = detect_legend_region(image_path=str(temp_dir / "missing.png"))
     assert res["status"] == "error"
     assert "not found" in res["message"]
+
+
+def test_detect_legend_items(temp_dir: Path) -> None:
+    """凡例領域から項目ごとの色サンプリング情報が取得できることを検証。"""
+    import cv2
+    import numpy as np
+
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (10, 10), (90, 60), (0, 0, 0), 1)
+    cv2.line(img, (15, 25), (35, 25), (0, 0, 255), 2)
+    cv2.line(img, (15, 45), (35, 45), (255, 0, 0), 2)
+
+    img_path = str(temp_dir / "legend_items_test.png")
+    cv2.imwrite(img_path, img)
+
+    res = detect_legend_region(image_path=img_path)
+    assert res.get("status") == "success"
+    assert "legend_items" in res
+    assert isinstance(res["legend_items"], list)
+
+
+def test_auto_calibrate_axes_synthetic(temp_dir: Path) -> None:
+    """目盛りとテキストの自動ペアリング校正パラメータ推定を検証。"""
+    import cv2
+    import numpy as np
+    import pymupdf as fitz
+
+    from digitize_agent.tools.geometry_detect import auto_calibrate_axes
+
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.insert_text(fitz.Point(60, 170), "10", fontsize=8)
+    page.insert_text(fitz.Point(100, 170), "20", fontsize=8)
+    page.insert_text(fitz.Point(140, 170), "30", fontsize=8)
+    page.insert_text(fitz.Point(20, 122), "5", fontsize=8)
+    page.insert_text(fitz.Point(20, 82), "10", fontsize=8)
+    page.insert_text(fitz.Point(20, 42), "15", fontsize=8)
+
+    pdf_path = str(temp_dir / "calib_test.pdf")
+    doc.save(pdf_path)
+    doc.close()
+
+    img = np.full((200, 200, 3), 255, dtype=np.uint8)
+    cv2.line(img, (30, 160), (180, 160), (0, 0, 0), 2)
+    cv2.line(img, (40, 20), (40, 170), (0, 0, 0), 2)
+    for xt in [60, 100, 140]:
+        cv2.line(img, (xt, 160), (xt, 165), (0, 0, 0), 1)
+    for yt in [40, 80, 120]:
+        cv2.line(img, (35, yt), (40, yt), (0, 0, 0), 1)
+
+    img_path = str(temp_dir / "calib_img.png")
+    cv2.imwrite(img_path, img)
+
+    res = auto_calibrate_axes(
+        image_path=img_path,
+        pdf_path=pdf_path,
+        dpi=72.0,
+    )
+    assert res.get("status") == "success"
+    assert "x_calibration" in res
+    assert "y_calibration" in res

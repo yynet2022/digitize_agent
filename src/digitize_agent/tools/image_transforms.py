@@ -34,10 +34,20 @@ class CropAndTransformInput(BaseModel):
         gt=0,
         description="Rendering DPI when extracting from PDF.",
     )
-    bbox: list[float] = Field(
+    bbox: list[float] | None = Field(
+        default=None,
         min_length=4,
         max_length=4,
         description="Bounding box [x_min, y_min, x_max, y_max].",
+    )
+    caption_bbox: list[float] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description=(
+            "Optional caption bbox [x0, y0, x1, y1] (pt) to auto-estimate "
+            "figure area directly above it."
+        ),
     )
     bbox_mode: Literal["pixel", "point"] = Field(
         default="pixel",
@@ -166,9 +176,52 @@ def _load_image_from_pdf(
         return img_data
 
 
+def _estimate_figure_bbox_above_caption(
+    page: fitz.Page,
+    caption_bbox: list[float],
+) -> list[float]:
+    """キャプション直上にある図表領域のバウンディングボックスを推定する。"""
+    c_x0, c_y0, c_x1, c_y1 = caption_bbox
+    search_top = max(40.0, c_y0 - 450.0)
+
+    drawings = page.get_drawings()
+    matching_rects: list[fitz.Rect] = []
+    for dwg in drawings:
+        r = dwg.get("rect")
+        if r is None:
+            continue
+        if r.y1 <= c_y0 + 5.0 and r.y0 >= search_top - 20.0:
+            if r.width > page.rect.width * 0.95:
+                continue
+            matching_rects.append(r)
+
+    if matching_rects:
+        min_x = min(r.x0 for r in matching_rects)
+        max_x = max(r.x1 for r in matching_rects)
+        min_y = min(r.y0 for r in matching_rects)
+        max_y = max(r.y1 for r in matching_rects)
+        pad_x = 35.0
+        pad_y = 15.0
+        est_x0 = max(0.0, min_x - pad_x)
+        est_y0 = max(0.0, min_y - pad_y)
+        est_x1 = min(page.rect.width, max_x + pad_x)
+        est_y1 = min(c_y0 + 5.0, max_y + pad_y)
+        return [est_x0, est_y0, est_x1, est_y1]
+
+    center_x = (c_x0 + c_x1) / 2.0
+    w = max(240.0, (c_x1 - c_x0) * 1.2)
+    h = 200.0
+    est_x0 = max(0.0, center_x - w / 2.0)
+    est_x1 = min(page.rect.width, center_x + w / 2.0)
+    est_y1 = c_y0 - 5.0
+    est_y0 = max(0.0, est_y1 - h)
+    return [est_x0, est_y0, est_x1, est_y1]
+
+
 def crop_and_transform_region(
-    bbox: list[float],
     output_path: str,
+    bbox: list[float] | None = None,
+    caption_bbox: list[float] | None = None,
     image_path: str | None = None,
     pdf_path: str | None = None,
     page_number: int = 0,
@@ -180,11 +233,12 @@ def crop_and_transform_region(
     """指定バウンディングボックスの領域を切り出し、傾き補正や強調を行う。
 
     画像ファイル、または PDF ファイルから直接指定 DPI でレンダリングして
-    指定領域をクロップ保存します。
+    指定領域をクロップ保存します。caption_bbox 指定時は自動推定します。
 
     Args:
-        bbox: [x_min, y_min, x_max, y_max] の切り出し範囲。
         output_path: 保存先のファイルパス。
+        bbox: [x_min, y_min, x_max, y_max] の切り出し範囲。
+        caption_bbox: キャプションの [x0, y0, x1, y1] (pt単位)。
         image_path: 元画像ファイルへのパス (pdf_path と排他または優先)。
         pdf_path: 元 PDF ファイルへのパス。
         page_number: PDF の対象ページ番号 (0-indexed)。
@@ -203,6 +257,7 @@ def crop_and_transform_region(
             page_number=page_number,
             dpi=dpi,
             bbox=bbox,
+            caption_bbox=caption_bbox,
             bbox_mode=bbox_mode,
             deskew=deskew,
             enhance_contrast=enhance_contrast,
@@ -215,6 +270,12 @@ def crop_and_transform_region(
         return {
             "status": "error",
             "message": "Either image_path or pdf_path must be specified.",
+        }
+
+    if not validated.bbox and not validated.caption_bbox:
+        return {
+            "status": "error",
+            "message": "Either bbox or caption_bbox must be provided.",
         }
 
     try:
@@ -245,18 +306,48 @@ def crop_and_transform_region(
 
         img_h, img_w = image.shape[:2]
 
-        # bbox_mode に応じたピクセル座標変換
-        if validated.bbox_mode == "point":
-            scale = validated.dpi / 72.0
-            bx0 = int(round(validated.bbox[0] * scale))
-            by0 = int(round(validated.bbox[1] * scale))
-            bx1 = int(round(validated.bbox[2] * scale))
-            by1 = int(round(validated.bbox[3] * scale))
+        # bbox または caption_bbox から effective_bbox を決定
+        estimated_bbox_pt: list[float] | None = None
+        if validated.bbox is None:
+            if not validated.pdf_path:
+                return {
+                    "status": "error",
+                    "message": (
+                        "Auto figure bbox estimation from caption_bbox "
+                        "requires pdf_path."
+                    ),
+                }
+            with fitz.open(validated.pdf_path) as doc:
+                if validated.page_number >= len(doc):
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Page {validated.page_number} out of range."
+                        ),
+                    }
+                page = doc[validated.page_number]
+                assert validated.caption_bbox is not None
+                estimated_bbox_pt = _estimate_figure_bbox_above_caption(
+                    page, validated.caption_bbox
+                )
+            effective_bbox = estimated_bbox_pt
+            eff_bbox_mode = "point"
         else:
-            bx0 = int(round(validated.bbox[0]))
-            by0 = int(round(validated.bbox[1]))
-            bx1 = int(round(validated.bbox[2]))
-            by1 = int(round(validated.bbox[3]))
+            effective_bbox = validated.bbox
+            eff_bbox_mode = validated.bbox_mode
+
+        # bbox_mode に応じたピクセル座標変換
+        if eff_bbox_mode == "point":
+            scale = validated.dpi / 72.0
+            bx0 = int(round(effective_bbox[0] * scale))
+            by0 = int(round(effective_bbox[1] * scale))
+            bx1 = int(round(effective_bbox[2] * scale))
+            by1 = int(round(effective_bbox[3] * scale))
+        else:
+            bx0 = int(round(effective_bbox[0]))
+            by0 = int(round(effective_bbox[1]))
+            bx1 = int(round(effective_bbox[2]))
+            by1 = int(round(effective_bbox[3]))
 
         # 境界値のクリッピングと整合性チェック
         x_min = max(0, min(bx0, img_w - 1))
@@ -293,12 +384,15 @@ def crop_and_transform_region(
             f_out.write(buffer)
 
         out_h, out_w = cropped.shape[:2]
-        return {
+        res: dict[str, Any] = {
             "status": "success",
             "output_path": str(out_path),
             "dimensions": {"width": out_w, "height": out_h},
             "skew_angle_detected": round(skew_angle, 3),
         }
+        if estimated_bbox_pt is not None:
+            res["estimated_bbox"] = [round(c, 2) for c in estimated_bbox_pt]
+        return res
     except Exception as exc:
         return {
             "status": "error",
