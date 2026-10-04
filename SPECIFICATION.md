@@ -594,5 +594,5 @@ python -m digitize_agent.server
 }
 ```
 
-※仮想環境を利用している場合は、`command` に仮想環境内の Python インタプリタの絶対パス（例: `C:\\Users\\yy9zz\\PyWorks\\digitize_agent\\.venv\\Scripts\\python.exe`）を指定してください。
+※仮想環境を利用している場合は、`command` に仮想環境内の Python インタプリタの絶対パス（Windows 例: `C:\\path\\to\\digitize_agent\\.venv\\Scripts\\python.exe`、macOS/Linux 例: `/path/to/digitize_agent/.venv/bin/python`）を指定してください。
 
