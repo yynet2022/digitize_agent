@@ -2,6 +2,7 @@
 
 デジタイズされた CSV データを元画像の座標系へ逆変換して重ね合わせ描画
 （オーバーレイ）を行い、適合度スコアを算出します。
+複数曲線の一括描画および自動色分けに対応します。
 """
 
 import math
@@ -14,6 +15,15 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from digitize_agent.tools.calibration import AxisCalibration
+
+DEFAULT_PALETTE: list[tuple[int, int, int]] = [
+    (255, 255, 0),  # シアン (BGR)
+    (255, 0, 255),  # マゼンタ
+    (0, 255, 255),  # イエロー
+    (0, 255, 0),  # グリーン
+    (0, 165, 255),  # オレンジ
+    (255, 128, 0),  # ライトブルー
+]
 
 
 class RenderVerificationOverlayInput(BaseModel):
@@ -31,6 +41,10 @@ class RenderVerificationOverlayInput(BaseModel):
     )
     output_overlay_path: str = Field(
         description="Output verification image path."
+    )
+    curve_column: str | None = Field(
+        default="curve",
+        description="Optional column name for curve grouping and coloring.",
     )
 
 
@@ -61,49 +75,57 @@ def _convert_value_to_pixel(
     if calib.scale_type == "log":
         if v1 <= 0 or v2 <= 0 or val <= 0:
             raise ValueError(
-                f"Log scale values must be strictly positive: val={val}"
+                f"Log scale values must be positive: v1={v1}, v2={v2}"
             )
         log_v1 = math.log10(v1)
         log_v2 = math.log10(v2)
         log_val = math.log10(val)
+        if log_v1 == log_v2:
+            raise ValueError("Log references cannot be equal.")
         t = (log_val - log_v1) / (log_v2 - log_v1)
-    else:
-        t = (val - v1) / (v2 - v1)
+        return float(p1 + t * (p2 - p1))
 
+    t = (val - v1) / (v2 - v1)
     return float(p1 + t * (p2 - p1))
 
 
 def _calculate_alignment_metric(
     image: np.ndarray,
     pixel_points: list[tuple[int, int]],
+    window_size: int = 3,
 ) -> float:
-    """元画像のエッジと再構築ピクセル点群との重なり度合いを計算する。
+    """逆変換ピクセル周辺のエッジ画素存在率からアライメント適合度を算出する。
 
     Args:
         image: 元画像 (BGR)。
-        pixel_points: 再構築されたピクセル座標群 [(px, py), ...]。
+        pixel_points: 重ね合わせるピクセル座標リスト。
+        window_size: 探索ウィンドウの半径ピクセル。
 
     Returns:
-        float: 0.0 から 1.0 までの適合度指標スコア。
+        float: 0.0 から 1.0 の適合度指標（一致率）。
     """
     if not pixel_points:
         return 0.0
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    # エッジの近傍（±2ピクセル）を許容するため膨張処理
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    dilated_edges = cv2.dilate(edges, kernel)
+    edges = cv2.Canny(gray, 40, 120)
 
-    height, width = image.shape[:2]
+    h, w = gray.shape
     matched_count = 0
     valid_count = 0
 
     for px, py in pixel_points:
-        if 0 <= px < width and 0 <= py < height:
-            valid_count += 1
-            if dilated_edges[py, px] > 0:
-                matched_count += 1
+        if not (0 <= px < w and 0 <= py < h):
+            continue
+        valid_count += 1
+        x_start = max(0, px - window_size)
+        x_end = min(w, px + window_size + 1)
+        y_start = max(0, py - window_size)
+        y_end = min(h, py + window_size + 1)
+
+        patch = edges[y_start:y_end, x_start:x_end]
+        if np.any(patch > 0):
+            matched_count += 1
 
     if valid_count == 0:
         return 0.0
@@ -117,8 +139,11 @@ def render_verification_overlay(
     x_calibration: dict[str, Any],
     y_calibration: dict[str, Any],
     output_overlay_path: str,
+    curve_column: str | None = "curve",
 ) -> dict[str, Any]:
     """元画像とデジタイズデータを半透明重ね合わせして検証画像を生成する。
+
+    複数曲線を含む CSV の場合は曲線ごとに色分けして個別にポリライン描画します。
 
     Args:
         original_image_path: 元画像のファイルパス。
@@ -126,6 +151,7 @@ def render_verification_overlay(
         x_calibration: X軸のキャリブレーション辞書。
         y_calibration: Y軸のキャリブレーション辞書。
         output_overlay_path: 検証画像の保存先ファイルパス。
+        curve_column: 曲線グループ分けに使用する列名 (デフォルト 'curve')。
 
     Returns:
         dict[str, Any]: 生成画像パスおよび適合度指標スコア、またはエラー。
@@ -137,6 +163,7 @@ def render_verification_overlay(
             x_calibration=AxisCalibration(**x_calibration),
             y_calibration=AxisCalibration(**y_calibration),
             output_overlay_path=output_overlay_path,
+            curve_column=curve_column,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -162,7 +189,7 @@ def render_verification_overlay(
         return {
             "status": "error",
             "message": (
-                f"Failed to load image: {validated.original_image_path}"
+                f"Failed to decode image: {validated.original_image_path}"
             ),
         }
 
@@ -174,38 +201,68 @@ def render_verification_overlay(
                 "message": f"CSV file is empty: {validated.csv_path}",
             }
 
-        # x, y カラムの存在確認（なければ先頭2列を採用）
-        col_x = "x" if "x" in df.columns else df.columns[0]
-        col_y = "y" if "y" in df.columns else df.columns[1]
+        # x, y カラムの特定（'x', 'y' または先頭2列）
+        non_curve_cols = [c for c in df.columns if c != validated.curve_column]
+        col_x = "x" if "x" in df.columns else non_curve_cols[0]
+        col_y = "y" if "y" in df.columns else non_curve_cols[1]
 
-        pixel_pts: list[tuple[int, int]] = []
-        for _, row in df.iterrows():
-            vx = float(row[col_x])
-            vy = float(row[col_y])
-            px = _convert_value_to_pixel(vx, validated.x_calibration)
-            py = _convert_value_to_pixel(vy, validated.y_calibration)
-            pixel_pts.append((int(round(px)), int(round(py))))
+        # 曲線グループの分割
+        grouped_curves: list[list[tuple[int, int]]] = []
+        has_group = (
+            validated.curve_column is not None
+            and validated.curve_column in df.columns
+        )
 
-        # オーバーレイ描画用キャンバス
+        if has_group:
+            for _, group_df in df.groupby(validated.curve_column, sort=False):
+                group_pts: list[tuple[int, int]] = []
+                for _, row in group_df.iterrows():
+                    vx = float(row[col_x])
+                    vy = float(row[col_y])
+                    px = _convert_value_to_pixel(vx, validated.x_calibration)
+                    py = _convert_value_to_pixel(vy, validated.y_calibration)
+                    group_pts.append((int(round(px)), int(round(py))))
+                grouped_curves.append(group_pts)
+        else:
+            single_pts: list[tuple[int, int]] = []
+            for _, row in df.iterrows():
+                vx = float(row[col_x])
+                vy = float(row[col_y])
+                px = _convert_value_to_pixel(vx, validated.x_calibration)
+                py = _convert_value_to_pixel(vy, validated.y_calibration)
+                single_pts.append((int(round(px)), int(round(py))))
+            grouped_curves.append(single_pts)
+
         overlay = image.copy()
-        if len(pixel_pts) >= 2:
-            pts_array = np.array(pixel_pts, dtype=np.int32).reshape((-1, 1, 2))
-            # 蛍光シアン (BGR: 255, 255, 0) で線描画
-            cv2.polylines(
-                overlay,
-                [pts_array],
-                isClosed=False,
-                color=(255, 255, 0),
-                thickness=2,
+        all_pts: list[tuple[int, int]] = []
+
+        for g_idx, pts in enumerate(grouped_curves):
+            all_pts.extend(pts)
+            if not pts:
+                continue
+            color_line = DEFAULT_PALETTE[g_idx % len(DEFAULT_PALETTE)]
+            color_dot = (
+                (255 - color_line[0], 255 - color_line[1], 255 - color_line[2])
+                if color_line != (255, 255, 255)
+                else (0, 0, 255)
             )
 
-        # 蛍光マゼンタ (BGR: 255, 0, 255) でデータ点描画
-        for px, py in pixel_pts:
-            cv2.circle(
-                overlay, (px, py), radius=3, color=(255, 0, 255), thickness=-1
-            )
+            if len(pts) >= 2:
+                pts_array = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(
+                    overlay,
+                    [pts_array],
+                    isClosed=False,
+                    color=color_line,
+                    thickness=2,
+                )
 
-        # 透過合成 (元画像 50% + オーバーレイ 50%)
+            for px, py in pts:
+                cv2.circle(
+                    overlay, (px, py), radius=3, color=color_dot, thickness=-1
+                )
+
+        # 透過合成 (元画像 40% + オーバーレイ 60%)
         blended = cv2.addWeighted(overlay, 0.6, image, 0.4, 0)
 
         out_path = Path(validated.output_overlay_path)
@@ -220,11 +277,13 @@ def render_verification_overlay(
         with open(out_path, "wb") as f_out:
             f_out.write(buffer)
 
-        metric = _calculate_alignment_metric(image, pixel_pts)
+        metric = _calculate_alignment_metric(image, all_pts)
 
         return {
+            "status": "success",
             "verification_image_path": str(out_path),
             "alignment_metric": metric,
+            "curves_rendered": len(grouped_curves),
         }
 
     except Exception as exc:

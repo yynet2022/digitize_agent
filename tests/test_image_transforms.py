@@ -1,7 +1,7 @@
 """画像変換・前処理ツールの単体テストモジュール。
 
-crop_and_transform_region の切り出し、傾き補正、コントラスト強調、
-およびエラー耐性を検証します。
+crop_and_transform_region の画像および PDF からの切り出し、
+傾き補正、コントラスト強調、およびエラー耐性を検証します。
 """
 
 from pathlib import Path
@@ -70,6 +70,59 @@ def test_crop_with_enhance_contrast(
 
     assert res["status"] == "success"
     assert Path(out_path).is_file()
+
+
+def test_crop_from_pdf_direct(
+    sample_pdf_with_text_and_lines: str, temp_dir: Path
+) -> None:
+    """PDF から直接指定 DPI で指定領域がクロップできることを検証する。"""
+    out_path = str(temp_dir / "pdf_cropped.png")
+    res = crop_and_transform_region(
+        pdf_path=sample_pdf_with_text_and_lines,
+        page_number=0,
+        dpi=144.0,
+        bbox=[50, 50, 200, 250],
+        output_path=out_path,
+    )
+
+    assert res["status"] == "success"
+    assert res["dimensions"]["width"] == 150
+    assert res["dimensions"]["height"] == 200
+    assert Path(out_path).is_file()
+
+
+def test_crop_from_pdf_bbox_mode_point(
+    sample_pdf_with_text_and_lines: str, temp_dir: Path
+) -> None:
+    """PDF 座標 (pt) 単位の bbox が DPI に応じて自動換算されることを検証。"""
+    out_path = str(temp_dir / "pdf_point_cropped.png")
+    # 72 DPI では 1 pt = 1 px, 144 DPI では 1 pt = 2 px
+    # bbox=[10, 10, 60, 80] pt -> 幅 50 pt (100 px), 高さ 70 pt (140 px)
+    res = crop_and_transform_region(
+        pdf_path=sample_pdf_with_text_and_lines,
+        page_number=0,
+        dpi=144.0,
+        bbox=[10, 10, 60, 80],
+        bbox_mode="point",
+        output_path=out_path,
+    )
+
+    assert res["status"] == "success"
+    assert res["dimensions"]["width"] == 100
+    assert res["dimensions"]["height"] == 140
+    assert Path(out_path).is_file()
+
+
+def test_crop_neither_image_nor_pdf(temp_dir: Path) -> None:
+    """image_path も pdf_path も未指定の場合にエラーを返すことを検証。"""
+    out_path = str(temp_dir / "fail.png")
+    res = crop_and_transform_region(
+        bbox=[0, 0, 50, 50],
+        output_path=out_path,
+    )
+
+    assert res["status"] == "error"
+    assert "Either image_path or pdf_path" in res["message"]
 
 
 def test_crop_file_not_found(temp_dir: Path) -> None:

@@ -7,6 +7,7 @@ from digitize_agent.tools.calibration import (
     calibrate_and_convert_coordinates,
 )
 from digitize_agent.tools.color_extractor import (
+    detect_plot_colors,
     extract_plot_pixels_by_color,
 )
 from digitize_agent.tools.geometry_detect import (
@@ -33,6 +34,7 @@ __all__ = [
     "crop_and_transform_region",
     "detect_axes_and_ticks",
     "ocr_region_text",
+    "detect_plot_colors",
     "extract_plot_pixels_by_color",
     "extract_vector_curve_points",
     "calibrate_and_convert_coordinates",

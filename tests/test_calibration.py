@@ -1,7 +1,7 @@
 """座標キャリブレーションおよび数値変換ツールの単体テストモジュール。
 
-calibrate_and_convert_coordinates の線形・対数変換精度、
-CSV 出力、およびエラーハンドリングを検証します。
+calibrate_and_convert_coordinates の線形・対数変換精度、列名指定、
+複数曲線の統合出力、およびエラーハンドリングを検証します。
 """
 
 from pathlib import Path
@@ -12,13 +12,9 @@ from digitize_agent.tools.calibration import calibrate_and_convert_coordinates
 
 
 def test_calibrate_linear(temp_dir: Path) -> None:
-    """線形スケールにおける座標変換および CSV 出力が
-    正確であることを検証する。
-    """
+    """線形スケールにおける座標変換および CSV 出力を検証する。"""
     out_csv = str(temp_dir / "linear.csv")
 
-    # X: ピクセル 0 -> 値 0.0, ピクセル 100 -> 値 10.0
-    # Y: ピクセル 100 (下) -> 値 0.0, ピクセル 0 (上) -> 値 50.0
     x_calib = {
         "pixel_refs": [0.0, 100.0],
         "val_refs": [0.0, 10.0],
@@ -60,7 +56,6 @@ def test_calibrate_log_scale(temp_dir: Path) -> None:
     """対数スケールにおける座標変換が正確であることを検証する。"""
     out_csv = str(temp_dir / "log.csv")
 
-    # Y: ピクセル 100 -> 値 1.0 (10^0), ピクセル 0 -> 値 100.0 (10^2)
     x_calib = {
         "pixel_refs": [0.0, 100.0],
         "val_refs": [0.0, 10.0],
@@ -72,7 +67,6 @@ def test_calibrate_log_scale(temp_dir: Path) -> None:
         "scale_type": "log",
     }
 
-    # 中間点 50 は対数中間値 10^1 = 10.0 になるはず
     pts = [[50.0, 50.0]]
 
     res = calibrate_and_convert_coordinates(
@@ -85,6 +79,55 @@ def test_calibrate_log_scale(temp_dir: Path) -> None:
     assert res["status"] == "success"
     df = pd.read_csv(out_csv)
     assert abs(df["y"][0] - 10.0) < 1e-3
+
+
+def test_calibrate_custom_columns_and_label(temp_dir: Path) -> None:
+    """列名指定および曲線ラベル付与が正常に反映されることを検証する。"""
+    out_csv = str(temp_dir / "custom.csv")
+    x_calib = {"pixel_refs": [0.0, 10.0], "val_refs": [0.0, 1.0]}
+    y_calib = {"pixel_refs": [0.0, 10.0], "val_refs": [0.0, 1.0]}
+
+    res = calibrate_and_convert_coordinates(
+        pixel_points=[[5.0, 5.0]],
+        column_names=["V_DS_V", "I_DS_mA"],
+        curve_label="V_GS_large",
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+    )
+
+    assert res["status"] == "success"
+    df = pd.read_csv(out_csv)
+    assert "V_DS_V" in df.columns
+    assert "I_DS_mA" in df.columns
+    assert "curve" in df.columns
+    assert df["curve"][0] == "V_GS_large"
+
+
+def test_calibrate_multiple_curves(temp_dir: Path) -> None:
+    """複数曲線のリストが一括変換され単一 CSV に結合されることを検証。"""
+    out_csv = str(temp_dir / "multi.csv")
+    x_calib = {"pixel_refs": [0.0, 10.0], "val_refs": [0.0, 1.0]}
+    y_calib = {"pixel_refs": [0.0, 10.0], "val_refs": [0.0, 1.0]}
+
+    curves_input = [
+        {"points": [[0.0, 0.0], [10.0, 10.0]], "label": "curve_a"},
+        {"points": [[5.0, 5.0]], "label": "curve_b"},
+    ]
+
+    res = calibrate_and_convert_coordinates(
+        curves=curves_input,
+        column_names=["x_val", "y_val"],
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+    )
+
+    assert res["status"] == "success"
+    assert res["row_count"] == 3
+    df = pd.read_csv(out_csv)
+    assert len(df) == 3
+    assert list(df["curve"]) == ["curve_a", "curve_a", "curve_b"]
 
 
 def test_calibrate_empty_points(temp_dir: Path) -> None:
@@ -101,13 +144,12 @@ def test_calibrate_empty_points(temp_dir: Path) -> None:
     )
 
     assert res["status"] == "error"
-    assert "empty" in res["message"]
+    assert "Either pixel_points or curves" in res["message"]
 
 
 def test_calibrate_zero_division(temp_dir: Path) -> None:
-    """基準ピクセルが同一でゼロ除算が発生する場合に安全にエラーを返すことを検証する。"""
+    """基準ピクセルが同一でゼロ除算が発生する場合にエラーを返すことを検証。"""
     out_csv = str(temp_dir / "zero.csv")
-    # p1 == p2
     x_calib = {"pixel_refs": [50.0, 50.0], "val_refs": [0.0, 10.0]}
     y_calib = {"pixel_refs": [0.0, 100.0], "val_refs": [0.0, 10.0]}
 

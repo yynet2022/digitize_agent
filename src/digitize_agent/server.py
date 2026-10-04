@@ -1,7 +1,7 @@
 """Digitize Agent MCP (Model Context Protocol) サーバーモジュール。
 
 学術論文や技術文書内のグラフおよび表を高精度にデジタイズするための
-8つのツール関数を MCP ツールとして公開し、Claude Desktop や各種 AI
+9つのツール関数を MCP ツールとして公開し、Claude Desktop や各種 AI
 エージェントからの呼び出しを可能にします。
 """
 
@@ -13,6 +13,7 @@ from digitize_agent.tools import (
     calibrate_and_convert_coordinates,
     crop_and_transform_region,
     detect_axes_and_ticks,
+    detect_plot_colors,
     extract_plot_pixels_by_color,
     extract_vector_curve_points,
     inspect_pdf_primitives,
@@ -34,6 +35,7 @@ def create_server() -> MCPServer:
     server.add_tool(crop_and_transform_region)
     server.add_tool(detect_axes_and_ticks)
     server.add_tool(ocr_region_text)
+    server.add_tool(detect_plot_colors)
     server.add_tool(extract_plot_pixels_by_color)
     server.add_tool(extract_vector_curve_points)
     server.add_tool(calibrate_and_convert_coordinates)

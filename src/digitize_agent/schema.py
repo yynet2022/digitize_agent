@@ -1,6 +1,6 @@
 """OpenAI Function Calling 互換のツールスキーマ定義モジュール。
 
-デジタイズエージェントで利用可能な各ツールの JSON Schema 定義を提供します。
+デジタイズエージェントで利用可能な全 9 ツールの JSON Schema 定義を提供します。
 """
 
 from typing import Any
@@ -9,8 +9,7 @@ INSPECT_PDF_PRIMITIVES_SCHEMA: dict[str, Any] = {
     "name": "inspect_pdf_primitives",
     "description": (
         "Extract raw vector lines, rects, and text bounding boxes directly "
-        "from a PDF page without raster degradation. Use this prior to "
-        "image processing if the source is a digital PDF."
+        "from a PDF page without raster degradation."
     ),
     "parameters": {
         "type": "object",
@@ -32,8 +31,7 @@ INSPECT_PDF_PRIMITIVES_SCHEMA: dict[str, Any] = {
                 "minItems": 4,
                 "maxItems": 4,
                 "description": (
-                    "Optional bounding box [x0, y0, x1, y1] in points to "
-                    "limit extraction."
+                    "Optional bounding box [x0, y0, x1, y1] in points."
                 ),
             },
         },
@@ -44,8 +42,8 @@ INSPECT_PDF_PRIMITIVES_SCHEMA: dict[str, Any] = {
 CROP_AND_TRANSFORM_REGION_SCHEMA: dict[str, Any] = {
     "name": "crop_and_transform_region",
     "description": (
-        "Crop a specific region of an image, optionally apply contrast "
-        "enhancement and deskewing, and save as a high-resolution sub-image."
+        "Crop a specific region of an image or directly from a PDF page at "
+        "custom DPI, apply deskewing and contrast enhancement."
     ),
     "parameters": {
         "type": "object",
@@ -54,29 +52,41 @@ CROP_AND_TRANSFORM_REGION_SCHEMA: dict[str, Any] = {
                 "type": "string",
                 "description": "Path to the source image file.",
             },
+            "pdf_path": {
+                "type": "string",
+                "description": "Path to PDF file (alternative to image).",
+            },
+            "page_number": {
+                "type": "integer",
+                "description": "0-indexed page number if extracting from PDF.",
+                "default": 0,
+            },
+            "dpi": {
+                "type": "number",
+                "description": "Rendering DPI for PDF (default 300).",
+                "default": 300.0,
+            },
             "bbox": {
                 "type": "array",
-                "items": {"type": "integer"},
+                "items": {"type": "number"},
                 "minItems": 4,
                 "maxItems": 4,
-                "description": (
-                    "Bounding box coordinates [x_min, y_min, x_max, y_max] "
-                    "in pixels."
-                ),
+                "description": "Bounding box [x_min, y_min, x_max, y_max].",
+            },
+            "bbox_mode": {
+                "type": "string",
+                "enum": ["pixel", "point"],
+                "description": "Unit of bbox: 'pixel' or 'point' (72 DPI pt).",
+                "default": "pixel",
             },
             "deskew": {
                 "type": "boolean",
-                "description": (
-                    "Whether to detect orientation and correct slight skew."
-                ),
+                "description": "Apply deskewing if true.",
                 "default": False,
             },
             "enhance_contrast": {
                 "type": "boolean",
-                "description": (
-                    "Apply CLAHE (Contrast Limited Adaptive Histogram "
-                    "Equalization)."
-                ),
+                "description": "Apply CLAHE contrast enhancement if true.",
                 "default": False,
             },
             "output_path": {
@@ -84,28 +94,27 @@ CROP_AND_TRANSFORM_REGION_SCHEMA: dict[str, Any] = {
                 "description": "Destination file path for the cropped image.",
             },
         },
-        "required": ["image_path", "bbox", "output_path"],
+        "required": ["bbox", "output_path"],
     },
 }
 
 DETECT_AXES_AND_TICKS_SCHEMA: dict[str, Any] = {
     "name": "detect_axes_and_ticks",
     "description": (
-        "Detect X and Y axis line pixel positions and potential tick mark "
-        "coordinates within a plot image."
+        "Detect horizontal and vertical coordinate axes, tick candidate "
+        "positions, and bounding frame lines in a plot image."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "image_path": {
                 "type": "string",
-                "description": "Path to the cropped plot area image.",
+                "description": "Path to the cropped plot image file.",
             },
             "min_line_length_ratio": {
                 "type": "number",
                 "description": (
-                    "Minimum length ratio relative to image dimensions "
-                    "to qualify as an axis line (default: 0.3)."
+                    "Minimum line length as a ratio of image dimensions."
                 ),
                 "default": 0.3,
             },
@@ -117,31 +126,52 @@ DETECT_AXES_AND_TICKS_SCHEMA: dict[str, Any] = {
 OCR_REGION_TEXT_SCHEMA: dict[str, Any] = {
     "name": "ocr_region_text",
     "description": (
-        "Perform precise OCR on a local image snippet to read numbers, "
-        "tick labels, or table cell texts."
+        "Execute OCR on an image snippet to recognize axis labels, "
+        "tick numbers, or table cell contents."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "image_path": {
                 "type": "string",
-                "description": "Path to the image snippet to recognize.",
+                "description": "Path to the cropped snippet image.",
             },
             "psm": {
                 "type": "integer",
-                "description": (
-                    "Tesseract Page Segmentation Mode (PSM). "
-                    "Use 6 (single block), 7 (single text line), "
-                    "or 8 (single word/number)."
-                ),
+                "description": "Tesseract Page Segmentation Mode (PSM).",
                 "default": 6,
             },
             "whitelist": {
                 "type": "string",
-                "description": (
-                    "Optional character whitelist, e.g., '0123456789.-+eE' "
-                    "for numeric scale reads."
-                ),
+                "description": "Optional character whitelist for OCR.",
+            },
+        },
+        "required": ["image_path"],
+    },
+}
+
+DETECT_PLOT_COLORS_SCHEMA: dict[str, Any] = {
+    "name": "detect_plot_colors",
+    "description": (
+        "Automatically detect dominant foreground plot colors, their HSV "
+        "ranges, and suggested preset names from a plot image."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_path": {
+                "type": "string",
+                "description": "Path to the plot image file.",
+            },
+            "max_colors": {
+                "type": "integer",
+                "description": "Maximum number of dominant colors to detect.",
+                "default": 5,
+            },
+            "min_pixel_ratio": {
+                "type": "number",
+                "description": "Minimum pixel ratio for plot lines.",
+                "default": 0.002,
             },
         },
         "required": ["image_path"],
@@ -151,55 +181,125 @@ OCR_REGION_TEXT_SCHEMA: dict[str, Any] = {
 EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA: dict[str, Any] = {
     "name": "extract_plot_pixels_by_color",
     "description": (
-        "Extract pixel coordinates of plot curves or scatter points "
-        "based on HSV color thresholding."
+        "Filter and extract pixel coordinates for data lines or markers of a "
+        "specified color using presets or HSV thresholds."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "image_path": {
                 "type": "string",
-                "description": "Path to the plot image.",
+                "description": "Path to the plot image file.",
+            },
+            "color_preset": {
+                "type": "string",
+                "enum": ["blue", "red", "green", "orange", "black"],
+                "description": "Preset color name for quick extraction.",
             },
             "hsv_lower": {
                 "type": "array",
                 "items": {"type": "integer"},
                 "minItems": 3,
                 "maxItems": 3,
-                "description": (
-                    "Lower bound for HSV threshold "
-                    "[H (0-179), S (0-255), V (0-255)]."
-                ),
+                "description": "HSV lower bound [H, S, V].",
             },
             "hsv_upper": {
                 "type": "array",
                 "items": {"type": "integer"},
                 "minItems": 3,
                 "maxItems": 3,
-                "description": (
-                    "Upper bound for HSV threshold "
-                    "[H (0-179), S (0-255), V (0-255)]."
-                ),
+                "description": "HSV upper bound [H, S, V].",
             },
             "extract_mode": {
                 "type": "string",
                 "enum": ["continuous_line", "scatter_centroids"],
-                "description": (
-                    "Extract continuous line (sorted by X pixel) "
-                    "or discrete marker centroids."
-                ),
+                "description": "Extraction mode.",
                 "default": "continuous_line",
             },
         },
-        "required": ["image_path", "hsv_lower", "hsv_upper"],
+        "required": ["image_path"],
+    },
+}
+
+EXTRACT_VECTOR_CURVE_POINTS_SCHEMA: dict[str, Any] = {
+    "name": "extract_vector_curve_points",
+    "description": (
+        "Sample dense coordinate points from vector Bézier curves or lines "
+        "inside a PDF drawing, with auto-chaining and crop transformation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pdf_path": {
+                "type": "string",
+                "description": "Path to the source PDF file.",
+            },
+            "page_number": {
+                "type": "integer",
+                "description": "0-indexed PDF page number.",
+                "default": 0,
+            },
+            "bbox_filter": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Optional bounding box in points to filter.",
+            },
+            "drawing_index": {
+                "type": "integer",
+                "description": "Optional specific drawing index.",
+            },
+            "curve_types": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Element types to extract: 'c' or 'l'.",
+                "default": ["c"],
+            },
+            "item_indices": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "Optional specific item indices in drawing.",
+            },
+            "curve_segments": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                },
+                "description": "Optional explicit item grouping for curves.",
+            },
+            "num_samples_per_segment": {
+                "type": "integer",
+                "description": "Number of sample points per Bézier curve.",
+                "default": 50,
+            },
+            "sort_x_ascending": {
+                "type": "boolean",
+                "description": "Sort points so X increases monotonically.",
+                "default": True,
+            },
+            "dpi": {
+                "type": "number",
+                "description": "DPI to scale coordinates to pixels.",
+            },
+            "crop_bbox_pixels": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "Optional [x0, y0, x1, y1] crop offset in px.",
+            },
+        },
+        "required": ["pdf_path"],
     },
 }
 
 CALIBRATE_AND_CONVERT_COORDINATES_SCHEMA: dict[str, Any] = {
     "name": "calibrate_and_convert_coordinates",
     "description": (
-        "Map pixel coordinates to real-world domain values using calibrated "
-        "reference points on X and Y axes, and export as CSV."
+        "Map extracted pixel coordinates to real-world domain values using "
+        "linear or log scales, with column naming and multi-curve support."
     ),
     "parameters": {
         "type": "object",
@@ -210,63 +310,42 @@ CALIBRATE_AND_CONVERT_COORDINATES_SCHEMA: dict[str, Any] = {
                     "type": "array",
                     "items": {"type": "number"},
                     "minItems": 2,
-                    "maxItems": 2,
                 },
-                "description": "List of pixel coordinates [[x, y], ...].",
+                "description": "Pixel coordinate points [[x, y], ...].",
+            },
+            "curves": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "Optional list of curve dicts each having 'points' list."
+                ),
+            },
+            "column_names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "Custom X/Y column names in CSV.",
+                "default": ["x", "y"],
+            },
+            "curve_label": {
+                "type": "string",
+                "description": "Optional label for single curve.",
             },
             "x_calibration": {
                 "type": "object",
-                "properties": {
-                    "pixel_refs": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                    "val_refs": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                    "scale_type": {
-                        "type": "string",
-                        "enum": ["linear", "log"],
-                        "default": "linear",
-                    },
-                },
-                "required": ["pixel_refs", "val_refs"],
+                "description": "X axis calibration parameters.",
             },
             "y_calibration": {
                 "type": "object",
-                "properties": {
-                    "pixel_refs": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                    "val_refs": {
-                        "type": "array",
-                        "items": {"type": "number"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                    "scale_type": {
-                        "type": "string",
-                        "enum": ["linear", "log"],
-                        "default": "linear",
-                    },
-                },
-                "required": ["pixel_refs", "val_refs"],
+                "description": "Y axis calibration parameters.",
             },
             "output_csv_path": {
                 "type": "string",
-                "description": "Destination file path for the digitized CSV.",
+                "description": "Destination file path for the CSV output.",
             },
         },
         "required": [
-            "pixel_points",
             "x_calibration",
             "y_calibration",
             "output_csv_path",
@@ -278,7 +357,7 @@ RENDER_VERIFICATION_OVERLAY_SCHEMA: dict[str, Any] = {
     "name": "render_verification_overlay",
     "description": (
         "Re-plot digitized numerical data onto the original cropped image "
-        "as an overlay to visually verify alignment and calibration accuracy."
+        "as a multi-color semi-transparent overlay to verify alignment."
     ),
     "parameters": {
         "type": "object",
@@ -293,23 +372,20 @@ RENDER_VERIFICATION_OVERLAY_SCHEMA: dict[str, Any] = {
             },
             "x_calibration": {
                 "type": "object",
-                "description": (
-                    "Same calibration parameter used in "
-                    "calibrate_and_convert_coordinates to map back to pixels."
-                ),
+                "description": "X axis calibration parameters.",
             },
             "y_calibration": {
                 "type": "object",
-                "description": (
-                    "Same calibration parameter used in "
-                    "calibrate_and_convert_coordinates to map back to pixels."
-                ),
+                "description": "Y axis calibration parameters.",
             },
             "output_overlay_path": {
                 "type": "string",
-                "description": (
-                    "Destination file path for the verification image."
-                ),
+                "description": "Destination file path for the overlay image.",
+            },
+            "curve_column": {
+                "type": "string",
+                "description": "CSV column name for grouping curves.",
+                "default": "curve",
             },
         },
         "required": [
@@ -327,7 +403,9 @@ ALL_SCHEMAS: list[dict[str, Any]] = [
     CROP_AND_TRANSFORM_REGION_SCHEMA,
     DETECT_AXES_AND_TICKS_SCHEMA,
     OCR_REGION_TEXT_SCHEMA,
+    DETECT_PLOT_COLORS_SCHEMA,
     EXTRACT_PLOT_PIXELS_BY_COLOR_SCHEMA,
+    EXTRACT_VECTOR_CURVE_POINTS_SCHEMA,
     CALIBRATE_AND_CONVERT_COORDINATES_SCHEMA,
     RENDER_VERIFICATION_OVERLAY_SCHEMA,
 ]

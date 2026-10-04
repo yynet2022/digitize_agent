@@ -13,6 +13,7 @@ EXPECTED_MCP_TOOLS = [
     "calibrate_and_convert_coordinates",
     "crop_and_transform_region",
     "detect_axes_and_ticks",
+    "detect_plot_colors",
     "extract_plot_pixels_by_color",
     "extract_vector_curve_points",
     "inspect_pdf_primitives",
@@ -22,7 +23,7 @@ EXPECTED_MCP_TOOLS = [
 
 
 def test_server_list_tools() -> None:
-    """MCP サーバーに仕様の全 8 ツールが登録されていることを検証する。"""
+    """MCP サーバーに仕様の全 9 ツールが登録されていることを検証する。"""
 
     async def _test() -> None:
         server = create_server()
@@ -30,7 +31,7 @@ def test_server_list_tools() -> None:
         tool_names = [t.name for t in tools]
         for expected in EXPECTED_MCP_TOOLS:
             assert expected in tool_names
-        assert len(tool_names) == 8
+        assert len(tool_names) == 9
 
     asyncio.run(_test())
 
