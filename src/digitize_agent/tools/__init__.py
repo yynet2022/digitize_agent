@@ -21,6 +21,9 @@ from digitize_agent.tools.ocr_tools import (
 from digitize_agent.tools.pdf_tools import (
     inspect_pdf_primitives,
 )
+from digitize_agent.tools.vector_curves import (
+    extract_vector_curve_points,
+)
 from digitize_agent.tools.visual_verifier import (
     render_verification_overlay,
 )
@@ -31,6 +34,7 @@ __all__ = [
     "detect_axes_and_ticks",
     "ocr_region_text",
     "extract_plot_pixels_by_color",
+    "extract_vector_curve_points",
     "calibrate_and_convert_coordinates",
     "render_verification_overlay",
 ]
