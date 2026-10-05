@@ -66,7 +66,7 @@ Claude Desktop や各種 AI コーディングアシスタント（Antigravity �
 
 ```bash
 # リポジトリのクローン
-git clone https://github.com/your-username/digitize_agent.git
+git clone https://github.com/yynet2022/digitize_agent.git
 cd digitize_agent
 
 # 仮想環境の作成と有効化

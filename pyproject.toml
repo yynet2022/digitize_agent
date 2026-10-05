@@ -19,7 +19,14 @@ dependencies = [
     "pytesseract>=0.3.10",
     "matplotlib>=3.7.0",
     "pydantic>=2.0.0",
-    "mcp>=1.0.0",
+    "mcp>=2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.16.0",
+    "pytest>=9.1.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [project.scripts]
