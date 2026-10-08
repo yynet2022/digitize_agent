@@ -227,12 +227,7 @@ def render_verification_overlay(
                 "message": f"CSV file is empty: {validated.csv_path}",
             }
 
-        # x, y カラムの特定（'x', 'y' または先頭2列）
-        non_curve_cols = [c for c in df.columns if c != validated.curve_column]
-        col_x = "x" if "x" in df.columns else non_curve_cols[0]
-        col_y = "y" if "y" in df.columns else non_curve_cols[1]
-
-        # 曲線グループの分割
+        # 曲線グループの分割 (Long 形式 / Wide 形式 / 単一曲線)
         grouped_curves: list[list[tuple[int, int]]] = []
         has_group = (
             validated.curve_column is not None
@@ -240,22 +235,62 @@ def render_verification_overlay(
         )
 
         if has_group:
+            # Long 形式: curve_column でグループ化
+            non_curve_cols = [
+                c for c in df.columns if c != validated.curve_column
+            ]
+            col_x = "x" if "x" in df.columns else non_curve_cols[0]
+            col_y = "y" if "y" in df.columns else non_curve_cols[1]
             for _, group_df in df.groupby(validated.curve_column, sort=False):
                 group_pts: list[tuple[int, int]] = []
                 for _, row in group_df.iterrows():
-                    vx = float(row[col_x])
-                    vy = float(row[col_y])
+                    val_x = row[col_x]
+                    val_y = row[col_y]
+                    if pd.isna(val_x) or pd.isna(val_y):
+                        continue
+                    vx = float(val_x)
+                    vy = float(val_y)
                     px = _convert_value_to_pixel(vx, validated.x_calibration)
                     py = _convert_value_to_pixel(vy, validated.y_calibration)
+                    if np.isnan(px) or np.isnan(py):
+                        continue
+                    group_pts.append((int(round(px)), int(round(py))))
+                grouped_curves.append(group_pts)
+        elif len(df.columns) > 2:
+            # Wide 形式: x 列以外の各列を独立した曲線として展開
+            col_x = "x" if "x" in df.columns else df.columns[0]
+            y_cols = [c for c in df.columns if c != col_x]
+            for y_col in y_cols:
+                group_pts = []
+                for _, row in df.iterrows():
+                    val_x = row[col_x]
+                    val_y = row[y_col]
+                    if pd.isna(val_x) or pd.isna(val_y):
+                        continue
+                    vx = float(val_x)
+                    vy = float(val_y)
+                    px = _convert_value_to_pixel(vx, validated.x_calibration)
+                    py = _convert_value_to_pixel(vy, validated.y_calibration)
+                    if np.isnan(px) or np.isnan(py):
+                        continue
                     group_pts.append((int(round(px)), int(round(py))))
                 grouped_curves.append(group_pts)
         else:
+            # 単一曲線形式 (2列)
+            col_x = "x" if "x" in df.columns else df.columns[0]
+            col_y = "y" if "y" in df.columns else df.columns[1]
             single_pts: list[tuple[int, int]] = []
             for _, row in df.iterrows():
-                vx = float(row[col_x])
-                vy = float(row[col_y])
+                val_x = row[col_x]
+                val_y = row[col_y]
+                if pd.isna(val_x) or pd.isna(val_y):
+                    continue
+                vx = float(val_x)
+                vy = float(val_y)
                 px = _convert_value_to_pixel(vx, validated.x_calibration)
                 py = _convert_value_to_pixel(vy, validated.y_calibration)
+                if np.isnan(px) or np.isnan(py):
+                    continue
                 single_pts.append((int(round(px)), int(round(py))))
             grouped_curves.append(single_pts)
 

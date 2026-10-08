@@ -110,3 +110,34 @@ def test_render_verification_empty_csv(
 
     assert res["status"] == "error"
     assert "empty" in res["message"]
+
+
+def test_render_verification_overlay_wide_with_nan(
+    sample_plot_image: str, temp_dir: Path
+) -> None:
+    """Wide 形式かつ NaN を含む CSV で正常に描画できることを検証する。"""
+    csv_path = str(temp_dir / "wide_nan.csv")
+    df = pd.DataFrame(
+        {
+            "x": [0.0, 5.0, 10.0],
+            "curve_a": [10.0, 20.0, float("nan")],
+            "curve_b": [float("nan"), 15.0, 30.0],
+        }
+    )
+    df.to_csv(csv_path, index=False)
+
+    out_img = str(temp_dir / "wide_overlay.png")
+    x_calib = {"pixel_refs": [40.0, 180.0], "val_refs": [0.0, 10.0]}
+    y_calib = {"pixel_refs": [160.0, 20.0], "val_refs": [0.0, 50.0]}
+
+    res = render_verification_overlay(
+        original_image_path=sample_plot_image,
+        csv_path=csv_path,
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_overlay_path=out_img,
+    )
+
+    assert res.get("status") != "error"
+    assert res.get("curves_rendered") == 2
+    assert Path(out_img).is_file()
