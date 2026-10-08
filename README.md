@@ -19,17 +19,17 @@ Claude Desktop や各種 AI コーディングアシスタント（Antigravity �
   * デジタル PDF からのベクター線・埋め込みテキスト直接抽出（解像度劣化ゼロ）
   * PDF ページからの直接レンダリング切り出し＆任意 DPI 指定
   * ハフ変換による傾き検出・自動補正 (Deskew) および CLAHE コントラスト強調
-  * モルフォロジー演算とプロジェクションプロファイルによる直交座標軸・目盛りの自動特定
-  * 目盛り線と数値ラベルの幾何学的自動ペアリング校正（`auto_calibrate_axes`）によるワンストップ校正値推定
-  * プロット画像内の凡例枠・密集テキスト検出および項目代表色取得（`detect_legend_region`）
+  * モルフォロジー演算とプロジェクションプロファイルによる直交座標軸・目盛り・外枠矩形（Box frame）の自動特定
+  * 目盛り線と数値ラベルの幾何学的自動ペアリング校正（`mode="tick_matched"`）および目盛り数値のない定性/任意単位(a.u.)グラフ向け正規化校正（`mode="normalized"`）をワンストップ推定
+  * プロット画像内の凡例枠・密集テキスト検出および項目代表色・推奨 HSV 範囲自動算出（`detect_legend_region`）
   * 電子 PDF の埋め込みベクターテキスト直接抽出を優先する OCR フォールバック（`ocr_region_text`）
   * 画像内の代表プロット色自動検知（`detect_plot_colors`）
-  * 12 色プリセット、RGB 配列、Hex 値、正規化/絶対距離の双方に対応した柔軟な許容誤差による高精度色抽出（`extract_plot_pixels_by_color`）
+  * 12 色プリセット、RGB 配列、Hex 値、HSV 明示指定、区間限定（`x_range`）、局所中央値平滑化（`smooth_filter`）による高精度ラスタプロット色抽出（`extract_plot_pixels_by_color`）
   * PDF 内部のベクター描画命令からの座標抽出、複数描画の一括抽出（`drawing_indices`）、同一ストローク色描画の自動統合（`group_by_color`）
-  * 線形および対数（Log）スケール対応の座標キャリブレーション、複数曲線の共通 X 格子線形補間（`resample_x_grid`, `num_grid_points`）、横持ち（Wide: `x, c1, c2`）および縦持ち（Long: `x, y, curve`）CSV 出力
+  * 線形および対数（Log）スケール対応の座標キャリブレーション、複数曲線の共通 X 格子線形補間（`resample_x_grid`, `num_grid_points`）、定義域外 NaN 処理（`extrapolate=False`）、横持ち（Wide: `x, c1, c2`）および縦持ち（Long: `x, y, curve`）CSV 出力
   * 複数曲線の自動色分けパレット描画と透過合成による適合度検証 (Visual Feedback)
-* **自己修復・エラー耐性**: パラメータ不正やファイル欠損時にもプロセスを落とさず、エージェントが再試行できる構造化エラーを返却。
-* **高いコード品質**: 全コードで PEP 8・最大行長 79 文字制限・型ヒント・docstring を遵守。全 71 件の単体テストをパス（テストカバレッジ 90% 以上）。
+* **自己修復・エラー耐性**: パラメータ不正やファイル欠損時にもプロセスを落とさず、エージェントが再試行できる構造化エラーを返却。目盛り照合不足時の正規化モード自動フォールバックを完備。
+* **高いコード品質**: 全コードで PEP 8・最大行長 79 文字制限・型ヒント・docstring を遵守。全 75 件の単体テストをパス（テストカバレッジ 90% 以上）。
 
 ---
 
@@ -49,6 +49,7 @@ Claude Desktop や各種 AI コーディングアシスタント（Antigravity �
 | `extract_vector_curve_points` | PDF 内部のベクター描画命令から等間隔座標列をサンプリング。複数描画一括抽出 (drawing_indices)、同色描画自動統合 (group_by_color)、目盛り線除外、ストローク色指定に対応 |
 | `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換。共通 X 格子への線形リサンプル、横持ち (wide) / 縦持ち (long) 形式の CSV 出力に対応 |
 | `render_verification_overlay` | デジタイズされた CSV データを元画像の座標系へ逆変換して複数曲線を自動色分けした半透明オーバーレイ画像を生成し、適合度指標を算出 |
+| `get_workflow_instructions` | 推奨ワークフロー、パラメータ指定指針、トラブルシューティング手順（instructions.md）をオンデマンドで取得 |
 
 ---
 
@@ -227,6 +228,78 @@ pixel_res = extract_plot_pixels_by_color(
 )
 ```
 
+#### 例 C: 目盛り数値なし・定性グラフ（a.u. / 規格化プロット）のデジタイズ
+
+ラマン分光やスペクトル測定など、軸に具体的な数値がなく枠線のみ（任意単位 a.u.）で描画されたグラフの場合です。
+
+```python
+from digitize_agent.tools import (
+    auto_calibrate_axes,
+    calibrate_and_convert_coordinates,
+    crop_and_transform_region,
+    detect_axes_and_ticks,
+    detect_legend_region,
+    extract_plot_pixels_by_color,
+    render_verification_overlay,
+)
+
+# 1. 300 DPI で図表を高解像度クロップ
+crop_res = crop_and_transform_region(
+    pdf_path="paper.pdf",
+    page_number=3,
+    caption_bbox=[100, 500, 250, 515],
+    output_path="output/qualitative_crop.png",
+)
+
+# 2. プロット外枠（Box Frame）を検出し内寸矩形を取得
+axes_res = detect_axes_and_ticks(
+    image_path="output/qualitative_crop.png",
+    detect_box_frame=True,
+)
+inner_box = axes_res["box_frame"]["inner_bbox"]
+
+# 3. 凡例から各曲線の代表色と推奨 HSV 範囲を取得
+legend_res = detect_legend_region(image_path="output/qualitative_crop.png")
+leg_items = legend_res["legend_items"]
+
+# 4. 外枠基準の正規化モードで [0.0, 1.0] ドメインへ校正
+calib_res = auto_calibrate_axes(
+    image_path="output/qualitative_crop.png",
+    mode="normalized",
+    box_frame_bbox=inner_box,
+    normalized_domain_x=[0.0, 1.0],  # または論文記載の波長範囲 [min, max]
+    normalized_domain_y=[0.0, 1.0],
+)
+
+# 5. 各曲線を平滑化フィルタ (smooth_filter) と区間限定 (x_range) で抽出
+extracted_curves = []
+for item in leg_items:
+    pts_res = extract_plot_pixels_by_color(
+        image_path="output/qualitative_crop.png",
+        hsv_lower=item["suggested_hsv_lower"],
+        hsv_upper=item["suggested_hsv_upper"],
+        smooth_filter=True,
+        max_jump=15.0,
+    )
+    extracted_curves.append(
+        {
+            "label": item["color_hex"],
+            "points": pts_res["pixel_points"],
+        }
+    )
+
+# 6. 定義域外を NaN に保ったまま共通 X 格子上に横持ち CSV 出力
+csv_res = calibrate_and_convert_coordinates(
+    curves=extracted_curves,
+    x_calibration=calib_res["x_calibration"],
+    y_calibration=calib_res["y_calibration"],
+    output_csv_path="output/qualitative_wide.csv",
+    output_format="wide",
+    num_grid_points=200,
+    extrapolate=False,  # 定義域外の平坦化外挿を防止
+)
+```
+
 ---
 
 ### 3. OpenAI Function Calling ディスパッチャの利用
@@ -246,6 +319,20 @@ arguments = {"image_path": "output/cropped_plot.png"}
 result = dispatch_tool_call(tool_name, arguments)
 print(result)
 ```
+
+---
+
+### 4. LLM エージェント向け推奨ワークフロー (Best Practice Workflows for LLMs)
+
+Claude Desktop や Antigravity 等の LLM エージェントが本 MCP を自律的に利用する際は、以下の 3 パターンの判断基準とフローを推奨します。
+
+| グラフの種類 | 判定基準 | 推奨ツール呼び出し順序 |
+| :--- | :--- | :--- |
+| **パターン A: PDF ベクター** | `inspect_pdf_primitives` で `is_scanned: false` かつベクター線が存在 | `search` → `inspect` → `crop` → `auto_calibrate(mode="tick_matched")` → `extract_vector_curve_points(group_by_color=True)` → `calibrate_and_convert(wide)` → `render_verification` |
+| **パターン B: ラスタ（目盛り数値あり）** | スキャン画像または埋め込み画像で、軸に目盛り数字が印刷されている | `crop` → `detect_axes` → `detect_legend` → `auto_calibrate(mode="tick_matched")` → `extract_plot_pixels_by_color(smooth_filter=True)` → `calibrate_and_convert` → `render_verification` |
+| **パターン C: ラスタ（目盛り数値なし／任意単位 a.u.）** | 目盛り数字がなく、枠線や定性的スペクトル・波形のみが描画されている | `crop` → `detect_axes(detect_box_frame=True)` → `detect_legend` → `auto_calibrate(mode="normalized", box_frame_bbox=...)` → `extract_plot_pixels_by_color(smooth_filter=True, x_range=...)` → `calibrate_and_convert(extrapolate=False)` → `render_verification` |
+
+より詳しい MCP 利用ガイドおよびトラブルシューティングは [INSTRUCTIONS.md](file:///C:/Users/yy9zz/PyWorks/digitize_agent/INSTRUCTIONS.md) をご参照ください。
 
 ---
 

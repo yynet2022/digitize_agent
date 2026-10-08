@@ -32,19 +32,28 @@ class RenderVerificationOverlayInput(BaseModel):
     original_image_path: str = Field(
         description="Path to the cropped original plot image."
     )
-    csv_path: str = Field(description="Path to the digitized CSV file.")
+    csv_path: str = Field(
+        description="Path to the digitized CSV file to verify."
+    )
     x_calibration: AxisCalibration = Field(
-        description="X axis calibration parameters."
+        description=(
+            "X axis calibration parameters (from auto_calibrate_axes)."
+        )
     )
     y_calibration: AxisCalibration = Field(
-        description="Y axis calibration parameters."
+        description=(
+            "Y axis calibration parameters (from auto_calibrate_axes)."
+        )
     )
     output_overlay_path: str = Field(
-        description="Output verification image path."
+        description="Target output overlay image file path (PNG recommended)."
     )
     curve_column: str | None = Field(
         default="curve",
-        description="Optional column name for curve grouping and coloring.",
+        description=(
+            "Optional column name for curve grouping in long format CSV "
+            "(default: 'curve')."
+        ),
     )
 
 
@@ -143,18 +152,35 @@ def render_verification_overlay(
 ) -> dict[str, Any]:
     """元画像とデジタイズデータを半透明重ね合わせして検証画像を生成する。
 
-    複数曲線を含む CSV の場合は曲線ごとに色分けして個別にポリライン描画します。
+    デジタイズされた CSV データを元画像のピクセル座標系へ逆変換し、
+    元画像上に鮮やかな色分けパレットで半透明オーバーレイ描画します。
+    複数曲線の一括描画（long 形式・wide 形式双方に対応）をサポートし、
+    エッジ検出画像との重なり一致率（alignment_metric: 0.0〜1.0）を算出します。
+    LLM が抽出精度を自己検証（Visual Feedback）するための必須ツールです。
+
+    推奨ワークフロー:
+        1. calibrate_and_convert_coordinates で CSV を生成した直後に実行。
+        2. output_overlay_path の画像を確認し、曲線が元画像と一致しているか
+           検証する。
+        3. alignment_metric が十分高いか（通常 0.6〜0.9 以上）を確認する。
 
     Args:
-        original_image_path: 元画像のファイルパス。
+        original_image_path: クロップ元プロット画像のファイルパス。
         csv_path: デジタイズ結果 CSV ファイルパス。
-        x_calibration: X軸のキャリブレーション辞書。
-        y_calibration: Y軸のキャリブレーション辞書。
-        output_overlay_path: 検証画像の保存先ファイルパス。
-        curve_column: 曲線グループ分けに使用する列名 (デフォルト 'curve')。
+        x_calibration: X軸のキャリブレーション辞書
+            (auto_calibrate_axes の出力)。
+        y_calibration: Y軸のキャリブレーション辞書
+            (auto_calibrate_axes の出力)。
+        output_overlay_path: 検証オーバーレイ画像の保存先ファイルパス。
+        curve_column: long形式 CSV 時に曲線識別に使用する列名 (標準: 'curve')。
 
     Returns:
-        dict[str, Any]: 生成画像パスおよび適合度指標スコア、またはエラー。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - output_path: 保存された検証画像パス。
+            - alignment_metric: エッジ重なり適合度スコア (0.0〜1.0)。
+            - points_overlaid: オーバーレイ描画された総点数。
+            - curves_count: 描画された曲線数。
     """
     try:
         validated = RenderVerificationOverlayInput(

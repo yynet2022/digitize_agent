@@ -56,7 +56,7 @@ def _parse_hex_color(hex_str: str) -> tuple[int, int, int]:
     return (r, g, b)
 
 
-def _rgb_to_hsv_bounds(
+def rgb_to_hsv_bounds(
     rgb: tuple[int, int, int],
     tolerance: float = 0.15,
 ) -> tuple[list[int], list[int]]:
@@ -80,13 +80,20 @@ def _rgb_to_hsv_bounds(
     return ([h_low, s_low, v_low], [h_high, s_high, v_high])
 
 
+# 後方互換用エイリアス
+_rgb_to_hsv_bounds = rgb_to_hsv_bounds
+
+
 class ExtractPlotPixelsInput(BaseModel):
     """extract_plot_pixels_by_color 関数の入力バリデーションモデル。"""
 
-    image_path: str = Field(description="Path to the plot image file.")
+    image_path: str = Field(description="Path to the cropped plot image file.")
     color_preset: ColorPresetType | None = Field(
         default=None,
-        description="Preset color name ('blue', 'red', 'cyan', etc.).",
+        description=(
+            "Preset color name ('blue', 'red', 'green', 'orange', 'purple', "
+            "'cyan', 'magenta', 'yellow', 'brown', 'pink', 'gray', 'black')."
+        ),
     )
     target_rgb: list[int] | None = Field(
         default=None,
@@ -96,28 +103,34 @@ class ExtractPlotPixelsInput(BaseModel):
     )
     target_hex: str | None = Field(
         default=None,
-        description="Target color in hex format (e.g., '#0072BD', 'FF0000').",
+        description="Target color in hex format (e.g., '#0072BD', '#D95319').",
     )
     color_tolerance: float = Field(
         default=35.0,
         ge=0.001,
         le=255.0,
         description=(
-            "Color matching tolerance (0.01-1.0 normalized or "
-            "1.0-255.0 distance)."
+            "Color matching tolerance (0.01-1.0 normalized or 1.0-255.0 "
+            "Euclidean distance, default: 35.0)."
         ),
     )
     hsv_lower: list[int] | None = Field(
         default=None,
         min_length=3,
         max_length=3,
-        description="HSV lower bound [H (0-179), S (0-255), V (0-255)].",
+        description=(
+            "Explicit HSV lower bound [H (0-179), S (0-255), V (0-255)]. "
+            "Recommended when using suggested_hsv_lower from legend/colors."
+        ),
     )
     hsv_upper: list[int] | None = Field(
         default=None,
         min_length=3,
         max_length=3,
-        description="HSV upper bound [H (0-179), S (0-255), V (0-255)].",
+        description=(
+            "Explicit HSV upper bound [H (0-179), S (0-255), V (0-255)]. "
+            "Recommended when using suggested_hsv_upper from legend/colors."
+        ),
     )
     bbox: list[int] | None = Field(
         default=None,
@@ -128,30 +141,62 @@ class ExtractPlotPixelsInput(BaseModel):
     exclude_bboxes: list[list[int]] | None = Field(
         default=None,
         description=(
-            "Optional list of bounding boxes to mask out (e.g. legends)."
+            "Optional list of bounding boxes to mask out (e.g. legend boxes "
+            "from detect_legend_region)."
         ),
     )
     extract_mode: Literal["continuous_line", "scatter_centroids"] = Field(
         default="continuous_line",
-        description="Extraction mode: continuous_line or scatter_centroids.",
+        description=(
+            "Extraction mode: 'continuous_line' for lines/curves (takes "
+            "column-wise medians), or 'scatter_centroids' for scatter dots."
+        ),
+    )
+    x_range: list[int] | None = Field(
+        default=None,
+        min_length=2,
+        max_length=2,
+        description=(
+            "Optional [x_min, x_max] pixel column range to restrict "
+            "extraction. Crucial for segmenting specific peak intervals."
+        ),
+    )
+    smooth_filter: bool = Field(
+        default=False,
+        description=(
+            "Enable moving local median outlier filter for lines. "
+            "Strongly recommended for noisy curves or overlapping lines."
+        ),
+    )
+    max_jump: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=200.0,
+        description=(
+            "Maximum allowed pixel jump from local median when smooth_filter "
+            "is True (default: 15.0 px)."
+        ),
     )
 
 
 class DetectPlotColorsInput(BaseModel):
     """detect_plot_colors 関数の入力バリデーションモデル。"""
 
-    image_path: str = Field(description="Path to the plot image file.")
+    image_path: str = Field(description="Path to the cropped plot image file.")
     max_colors: int = Field(
         default=5,
         ge=1,
         le=10,
-        description="Maximum number of dominant plot colors to detect.",
+        description="Maximum number of dominant plot colors to detect (1-10).",
     )
     min_pixel_ratio: float = Field(
         default=0.002,
         ge=0.0001,
         le=0.5,
-        description="Minimum pixel population ratio to consider as plot line.",
+        description=(
+            "Minimum pixel population ratio to consider as plot line "
+            "(default: 0.002 = 0.2%)."
+        ),
     )
 
 
@@ -189,24 +234,49 @@ def extract_plot_pixels_by_color(
     bbox: list[int] | None = None,
     exclude_bboxes: list[list[int]] | None = None,
     extract_mode: str = "continuous_line",
+    x_range: list[int] | None = None,
+    smooth_filter: bool = False,
+    max_jump: float = 15.0,
 ) -> dict[str, Any]:
-    """HSV色閾値、プリセット、RGB/Hexによりプロットの座標群を抽出する。
+    """色条件（HSV閾値、RGB/Hex、プリセット）に基づきプロット曲線を抽出する。
+
+    ラスタ画像から指定色の画素を二値化抽出し、連続曲線（各X列の中央値）または
+    散布図（連結成分重心）のピクセル座標列 [[x, y], ...] を生成します。
+    凡例領域の除外（exclude_bboxes）、X区間の限定（x_range）、および
+    局所移動中央値による強力な平滑化外れ値除去（smooth_filter）を備えています。
+
+    推奨ワークフロー:
+        1. detect_legend_region で凡例枠 (exclude_bboxes) と各色推奨 HSV 範囲
+           (suggested_hsv_lower, suggested_hsv_upper) を取得する。
+        2. 取得した hsv_lower, hsv_upper を指定して本関数を実行する
+           （Hex や RGB よりも HSV 範囲指定が最も高精度）。
+        3. ラスタ線のノイズや破線、交差がある場合は smooth_filter=True を
+           指定して滑らかな曲線を抽出する。
+        4. 複数曲線のピークが一部区間に限られる場合は x_range=[x_min, x_max]
+           を指定して特定区間のみを抽出する。
+        5. 抽出結果の pixel_points を
+           calibrate_and_convert_coordinates に渡す。
 
     Args:
-        image_path: 対象画像のファイルパス。
-        color_preset: 代表色プリセット ('blue', 'cyan', 'magenta' 等)。
+        image_path: 対象グラフ画像のファイルパス。
+        color_preset: 代表色プリセット名 ('blue', 'red', 'green' 等)。
         target_rgb: 対象 RGB 色 [R, G, B] (0-255)。
         target_hex: 対象 16 進カラーコード (例: '#0072BD')。
-        color_tolerance: RGB/Hex 照合時の許容誤差係数 (0.01-0.5)。
-        hsv_lower: HSV 下限値リスト [H, S, V] (手動指定時)。
-        hsv_upper: HSV 上限値リスト [H, S, V] (手動指定時)。
+        color_tolerance: RGB/Hex 照合時の許容誤差 (0.01-1.0 または 1-255)。
+        hsv_lower: 明示的 HSV 下限 [H, S, V] (推奨)。
+        hsv_upper: 明示的 HSV 上限 [H, S, V] (推奨)。
         bbox: 抽出対象の矩形範囲 [x_min, y_min, x_max, y_max]。
-        exclude_bboxes: 除外する矩形範囲のリスト (凡例枠等)。
-        extract_mode: 抽出モード
-            ("continuous_line" または "scatter_centroids")。
+        exclude_bboxes: 除外矩形リスト (detect_legend_region の出力)。
+        extract_mode: "continuous_line" (線) または "scatter_centroids" (点)。
+        x_range: 抽出を限定する X ピクセル範囲 [x_min, x_max]。
+        smooth_filter: 局所中央値による外れ値・ノイズ除去を有効化するか。
+        max_jump: smooth_filter 有効時の局所中央値からの最大許容ピクセル幅。
 
     Returns:
-        dict[str, Any]: 抽出点数およびピクセル座標配列、またはエラー。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - point_count: 抽出されたデータ点数。
+            - pixel_points: 抽出ピクセル点列 [[x, y], ...]。
     """
     try:
         validated = ExtractPlotPixelsInput(
@@ -220,6 +290,9 @@ def extract_plot_pixels_by_color(
             bbox=bbox,
             exclude_bboxes=exclude_bboxes,
             extract_mode=extract_mode,  # type: ignore[arg-type]
+            x_range=x_range,
+            smooth_filter=smooth_filter,
+            max_jump=max_jump,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -324,11 +397,28 @@ def extract_plot_pixels_by_color(
             y_indices, x_indices = np.where(mask > 0)
             if len(x_indices) > 0:
                 unique_xs = np.unique(x_indices)
+                if validated.x_range is not None:
+                    xr0, xr1 = validated.x_range
+                    unique_xs = unique_xs[
+                        (unique_xs >= xr0) & (unique_xs <= xr1)
+                    ]
                 for x in unique_xs:
                     ys = y_indices[x_indices == x]
                     y_median = int(np.median(ys))
                     pixel_points.append([int(x), y_median])
                 pixel_points.sort(key=lambda pt: pt[0])
+
+                if validated.smooth_filter and len(pixel_points) > 5:
+                    filtered_pts: list[list[int]] = []
+                    xs = np.array([p[0] for p in pixel_points])
+                    ys = np.array([p[1] for p in pixel_points])
+                    for idx in range(len(xs)):
+                        win_start = max(0, idx - 10)
+                        win_end = min(len(xs), idx + 11)
+                        local_med = np.median(ys[win_start:win_end])
+                        if abs(ys[idx] - local_med) <= validated.max_jump:
+                            filtered_pts.append([int(xs[idx]), int(ys[idx])])
+                    pixel_points = filtered_pts
         else:
             contours, _ = cv2.findContours(
                 mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -366,16 +456,29 @@ def detect_plot_colors(
 ) -> dict[str, Any]:
     """画像内の主要プロット色を自動検出し、色抽出用パラメータ候補を返す。
 
-    白背景や無彩色ノイズを除外し、曲線プロット候補となる代表色クラスタを
-    解析して HSV 範囲と推奨プリセット名を返します。
+    白背景や無彩色（黒・灰）の軸・目盛り・テキストを除外し、データ曲線
+    候補となる有彩色クラスタを HSV 空間で自動クラスタリングします。
+    各色クラスタの代表 RGB/Hex、色プリセット名、および推奨 HSV 境界
+    （suggested_hsv_lower, suggested_hsv_upper）を返却します。
+
+    推奨ワークフロー:
+        1. 凡例（Legend）が存在しないグラフや、プロット色を手動特定できない
+           場合に本関数を実行。
+        2. 出力の dominant_colors リストから抽出したい曲線の候補を選択。
+        3. 選択した候補の suggested_hsv_lower および suggested_hsv_upper を
+           extract_plot_pixels_by_color の hsv_lower, hsv_upper に渡す。
 
     Args:
         image_path: 対象画像のファイルパス。
-        max_colors: 検出する最大色数。
-        min_pixel_ratio: プロット線とみなす最小画素割合。
+        max_colors: 検出する最大代表色数 (1〜10、標準: 5)。
+        min_pixel_ratio: プロット線とみなす最小画素占有割合 (標準: 0.002)。
 
     Returns:
-        dict[str, Any]: 検出された代表色リストおよび推奨情報。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - dominant_colors: 検出された代表色リスト。各要素は color_name,
+              rgb, hex, suggested_hsv_lower, suggested_hsv_upper,
+              pixel_ratio を含む。
     """
     try:
         validated = DetectPlotColorsInput(

@@ -263,3 +263,35 @@ def test_calibrate_resample_explicit_grid(temp_dir: Path) -> None:
     df = pd.read_csv(out_csv)
     assert len(df) == len(custom_x)
     assert list(df["x"]) == custom_x
+
+
+def test_calibrate_extrapolate_false(temp_dir: Path) -> None:
+    """extrapolate=False 時に定義域外の補間値が NaN になることを検証。"""
+    out_csv = str(temp_dir / "no_extrapolate.csv")
+    x_calib = {"pixel_refs": [0.0, 100.0], "val_refs": [0.0, 10.0]}
+    y_calib = {"pixel_refs": [100.0, 0.0], "val_refs": [0.0, 50.0]}
+
+    # c1 は X: 2.0..8.0 にのみ存在
+    curves = [
+        {"name": "c1", "points": [[20.0, 80.0], [80.0, 20.0]]},
+    ]
+
+    custom_x = [0.0, 2.0, 5.0, 8.0, 10.0]
+    res = calibrate_and_convert_coordinates(
+        curves=curves,
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+        output_format="wide",
+        resample_x_grid=custom_x,
+        extrapolate=False,
+    )
+    assert res["status"] == "success"
+    df = pd.read_csv(out_csv)
+    assert len(df) == 5
+    # X=0.0 と X=10.0 は NaN
+    assert pd.isna(df["c1"].iloc[0])
+    assert not pd.isna(df["c1"].iloc[1])
+    assert not pd.isna(df["c1"].iloc[2])
+    assert not pd.isna(df["c1"].iloc[3])
+    assert pd.isna(df["c1"].iloc[4])

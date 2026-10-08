@@ -17,28 +17,36 @@ class ExtractVectorCurvePointsInput(BaseModel):
     """extract_vector_curve_points 関数の入力バリデーションモデル。"""
 
     pdf_path: str = Field(description="Path to the PDF file.")
-    page_number: int = Field(default=0, ge=0, description="0-indexed page.")
+    page_number: int = Field(
+        default=0, ge=0, description="0-indexed target page number."
+    )
     bbox_filter: list[float] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
         description=(
             "Optional [x0, y0, x1, y1] bounding box in PDF points to filter "
-            "drawings."
+            "drawings within target plot area."
         ),
     )
     drawing_index: int | None = Field(
         default=None,
         ge=0,
-        description="Optional index of a specific drawing to extract from.",
+        description="Optional index of a single specific drawing to extract.",
     )
     drawing_indices: list[int] | None = Field(
         default=None,
-        description="Optional list of specific drawing indices to extract.",
+        description=(
+            "Optional list of drawing indices to extract together (e.g. "
+            "[31, 32, 33])."
+        ),
     )
     curve_types: list[str] = Field(
         default=["c"],
-        description="Element types to extract: 'c' for Bézier, 'l' for lines.",
+        description=(
+            "Element types to extract: 'c' for Bézier curves (default), "
+            "'l' for line segments."
+        ),
     )
     item_indices: list[int] | None = Field(
         default=None,
@@ -54,7 +62,9 @@ class ExtractVectorCurvePointsInput(BaseModel):
         default=50,
         ge=2,
         le=500,
-        description="Number of sampled points per Bézier curve segment.",
+        description=(
+            "Number of sampled points per Bézier curve segment (default: 50)."
+        ),
     )
     sort_x_ascending: bool = Field(
         default=True,
@@ -63,7 +73,10 @@ class ExtractVectorCurvePointsInput(BaseModel):
     dpi: float | None = Field(
         default=None,
         gt=0,
-        description="DPI to convert PDF points to pixel coordinates.",
+        description=(
+            "Rendering resolution (DPI) to convert PDF points to pixel "
+            "coordinates (match the crop DPI, e.g. 300.0)."
+        ),
     )
     crop_bbox_pixels: list[float] | None = Field(
         default=None,
@@ -78,7 +91,10 @@ class ExtractVectorCurvePointsInput(BaseModel):
     min_length: float = Field(
         default=0.0,
         ge=0.0,
-        description="Minimum path length in points to filter out tick marks.",
+        description=(
+            "Minimum path length in points to filter out short tick marks "
+            "or noise dots (e.g. 5.0)."
+        ),
     )
     stroke_color: list[float] | None = Field(
         default=None,
@@ -101,8 +117,8 @@ class ExtractVectorCurvePointsInput(BaseModel):
     group_by_color: bool = Field(
         default=False,
         description=(
-            "If True, groups matching drawings by stroke color and "
-            "merges curves."
+            "If True, groups matching drawings by identical stroke color and "
+            "merges curve segments into continuous curves. Highly recommended."
         ),
     )
 
@@ -425,32 +441,46 @@ def extract_vector_curve_points(
     extract_all_matching: bool = False,
     group_by_color: bool = False,
 ) -> dict[str, Any]:
-    """PDF のベクター描画パスから曲線の座標列を抽出・サンプリングする。
+    """PDF のベクター描画パスから曲線の座標列を直接サンプリング抽出する。
 
-    ベジェ曲線 ('c') 等の要素から指定密度の座標列をサンプリングし、
-    近接セグメントの自動連結やピクセル座標変換を行います。
+    PDF 内部に埋め込まれたベクター描画命令（ベジェ曲線 'c'、線分 'l'）を
+    解析し、幾何学的に等間隔な座標点列 [[x, y], ...] を抽出します。
+    ラスタ画像変換を介さないため解像度劣化や色にじみがなく、最高精度です。
+    複数描画の一括抽出（drawing_indices）、同一線色の自動マージ（group_by_color）、
+    目盛り線の除外（min_length）に対応しています。
+
+    推奨ワークフロー:
+        1. inspect_pdf_primitives でベクター線の存在とインデックスを確認。
+        2. 抽出対象の描画インデックス群を drawing_indices に渡し、
+           group_by_color=True, dpi=300.0 を指定して本関数を実行。
+        3. 出力の color_grouped_curves をそのまま
+           calibrate_and_convert_coordinates の curves に渡して CSV 変換。
 
     Args:
         pdf_path: 対象 PDF ファイルのパス。
-        page_number: 0 から始まる対象ページ番号。
-        bbox_filter: 描画抽出範囲 [x0, y0, x1, y1] (pt単位)。
-        drawing_index: 特定の描画オブジェクト番号。
-        drawing_indices: 複数の特定描画オブジェクト番号リスト。
-        curve_types: 抽出対象要素タイプ ('c' または 'l')。
+        page_number: 0 から始まる対象ページ番号 (標準: 0)。
+        bbox_filter: 描画抽出範囲 [x0, y0, x1, y1] (PDF pt単位)。
+        drawing_index: 特定の単一描画オブジェクト番号。
+        drawing_indices: 複数の特定描画オブジェクト番号リスト (推奨)。
+        curve_types: 抽出対象要素タイプ ('c': ベジェ, 'l': 線分、標準: ['c'])。
         item_indices: 描画内の特定アイテム番号リスト。
         curve_segments: 曲線ごとにアイテム番号をグループ化したリスト。
-        num_samples_per_segment: ベジェ曲線1区間あたりのサンプル数。
-        sort_x_ascending: X座標を昇順に整列するかどうか。
-        dpi: ピクセル変換用のレンダリング解像度 (DPI)。
+        num_samples_per_segment: ベジェ曲線1区間あたりのサンプル数 (標準: 50)。
+        sort_x_ascending: X座標を昇順に整列するかどうか (標準: True)。
+        dpi: ピクセル変換用の解像度 (DPI、クロップ画像と一致させる)。
         crop_bbox_pixels: クロップ画像の [x0, y0, x1, y1] (px単位)。
-        min_length: 目盛り等を除外する最小パス長 (pt単位)。
+        min_length: 短い目盛り線等を除外する最小パス長 (pt単位、例: 5.0)。
         stroke_color: 抽出対象の線色 [R, G, B]。
         color_tolerance: 線色照合時の許容誤差係数。
         extract_all_matching: マッチする全描画を一括返却するかどうか。
-        group_by_color: 色別に描画曲線を自動グループ化・統合するかどうか。
+        group_by_color: 同一線色の描画曲線を自動統合するか (標準: False)。
 
     Returns:
-        dict[str, Any]: 抽出された曲線データリスト、またはエラー情報。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - curves: 抽出された各曲線のリスト。
+            - color_grouped_curves: group_by_color 有効時に同一色で統合された
+              曲線リスト (calibrate_and_convert_coordinates に直接入力可能)。
     """
     try:
         validated = ExtractVectorCurvePointsInput(

@@ -19,28 +19,41 @@ class OcrRegionTextInput(BaseModel):
     """ocr_region_text 関数の入力バリデーションモデル。"""
 
     image_path: str | None = Field(
-        default=None, description="Path to the image snippet file."
+        default=None,
+        description="Path to the cropped image snippet file for OCR.",
     )
     pdf_path: str | None = Field(
         default=None,
-        description="Optional PDF file path for native vector text fallback.",
+        description=(
+            "Optional PDF file path. If provided, directly extracts native "
+            "vector text with zero recognition error."
+        ),
     )
-    page_number: int = Field(default=0, ge=0, description="0-indexed page.")
+    page_number: int = Field(
+        default=0,
+        ge=0,
+        description="0-indexed target page number (default: 0).",
+    )
     bbox: list[float] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
-        description="Bounding box [x0, y0, x1, y1] in points.",
+        description="Bounding box [x0, y0, x1, y1] in PDF points.",
     )
     psm: int = Field(
         default=6,
         ge=0,
         le=13,
-        description="Tesseract Page Segmentation Mode (PSM).",
+        description=(
+            "Tesseract Page Segmentation Mode: 6 for uniform block, 7 for "
+            "single text line, 11 for sparse text."
+        ),
     )
     whitelist: str | None = Field(
         default=None,
-        description="Optional character whitelist for OCR.",
+        description=(
+            "Optional character whitelist (e.g. '0123456789.-' for numbers)."
+        ),
     )
 
 
@@ -109,16 +122,25 @@ def ocr_region_text(
 ) -> dict[str, Any]:
     """画像スニペットまたは PDF 領域からテキストを認識・抽出する。
 
+    切り出し画像に対して Tesseract OCR を実行します。また、電子 PDF の場合は
+    pdf_path を渡すことでネイティブ埋め込みテキストを直接抽出（解像度劣化や
+    OCR 誤認識なし、信頼度 100%）するフォールバックを優先します。
+    グラフの軸タイトル、単位、目盛り数値、表セルの読み取りに活用できます。
+
     Args:
-        image_path: 入力画像のファイルパス。
-        pdf_path: フォールバックまたは直接取得用 PDF パス。
-        page_number: PDF 対象ページ番号。
-        bbox: PDF 内の抽出矩形 [x0, y0, x1, y1] (pt単位)。
-        psm: Tesseract PSM モード番号。
-        whitelist: 認識対象を限定する文字ホワイトリスト。
+        image_path: 入力画像のファイルパス (OCR 用)。
+        pdf_path: 元 PDF パス (電子テキスト優先抽出用、推奨)。
+        page_number: PDF 対象ページ番号 (0-indexed、標準: 0)。
+        bbox: PDF 内の抽出矩形 [x0, y0, x1, y1] (PDF pt単位)。
+        psm: Tesseract PSM モード番号 (標準: 6: 単一均一ブロック)。
+        whitelist: 認識対象を限定する文字ホワイトリスト (例: '0123456789.-')。
 
     Returns:
-        dict[str, Any]: 生テキスト、整形テキスト、信頼度スコア、またはエラー。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - raw_text: 抽出された生テキスト文字列。
+            - clean_text: 改行や余分な空白を除去した整形テキスト。
+            - confidence: 平均認識信頼度スコア (0.0〜100.0)。
     """
     try:
         validated = OcrRegionTextInput(

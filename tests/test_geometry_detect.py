@@ -150,3 +150,51 @@ def test_auto_calibrate_axes_synthetic(temp_dir: Path) -> None:
     assert res.get("status") == "success"
     assert "x_calibration" in res
     assert "y_calibration" in res
+
+
+def test_detect_axes_box_frame(temp_dir: Path) -> None:
+    """四角い外枠（Box Frame）を持つプロット画像から枠情報が検出されること。"""
+    import cv2
+    import numpy as np
+
+    img = np.full((300, 300, 3), 255, dtype=np.uint8)
+    # 外枠線 (x: 40..260, y: 30..270)
+    cv2.rectangle(img, (40, 30), (260, 270), (0, 0, 0), 2)
+    img_path = str(temp_dir / "box_frame_test.png")
+    cv2.imwrite(img_path, img)
+
+    res = detect_axes_and_ticks(img_path)
+    assert res.get("status") != "error"
+    assert res.get("box_frame") is not None
+    bf = res["box_frame"]
+    assert "inner_bbox" in bf
+    assert "outer_bbox" in bf
+    assert abs(bf["outer_bbox"][0] - 40) <= 3
+    assert abs(bf["outer_bbox"][2] - 260) <= 3
+
+
+def test_auto_calibrate_axes_normalized(temp_dir: Path) -> None:
+    """目盛りのない画像に対し正規化モードでキャリブレーションが行われること。"""
+    import cv2
+    import numpy as np
+
+    from digitize_agent.tools.geometry_detect import auto_calibrate_axes
+
+    img = np.full((300, 300, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (40, 30), (260, 270), (0, 0, 0), 2)
+    img_path = str(temp_dir / "norm_calib_test.png")
+    cv2.imwrite(img_path, img)
+
+    res = auto_calibrate_axes(
+        image_path=img_path,
+        mode="normalized",
+        normalized_domain_x=[0.0, 1.0],
+        normalized_domain_y=[0.0, 1.0],
+    )
+    assert res.get("status") == "success"
+    assert res.get("calibration_mode") == "normalized"
+    assert "x_calibration" in res
+    assert "y_calibration" in res
+    x_cal = res["x_calibration"]
+    assert x_cal["val_refs"] == [0.0, 1.0]
+    assert abs(x_cal["pixel_refs"][0] - 40) <= 5

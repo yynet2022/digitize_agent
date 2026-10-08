@@ -18,6 +18,7 @@ EXPECTED_TOOLS = [
     "detect_plot_colors",
     "extract_plot_pixels_by_color",
     "extract_vector_curve_points",
+    "get_workflow_instructions",
     "inspect_pdf_primitives",
     "ocr_region_text",
     "render_verification_overlay",
@@ -26,8 +27,8 @@ EXPECTED_TOOLS = [
 
 
 def test_schema_definitions() -> None:
-    """定義スキーマが全12ツールと一致し構造が妥当かを検証する。"""
-    assert len(ALL_SCHEMAS) == 12
+    """定義スキーマが全13ツールと一致し構造が妥当かを検証する。"""
+    assert len(ALL_SCHEMAS) == 13
     for name in EXPECTED_TOOLS:
         assert name in SCHEMAS_BY_NAME
         schema = SCHEMAS_BY_NAME[name]
@@ -39,7 +40,7 @@ def test_schema_definitions() -> None:
 
 
 def test_registry_tool_listing() -> None:
-    """レジストリが仕様で定義された全12ツールを保持していることを検証する。"""
+    """レジストリが仕様で定義された全13ツールを保持していることを検証する。"""
     tools = list_tools()
     assert sorted(tools) == sorted(EXPECTED_TOOLS)
 

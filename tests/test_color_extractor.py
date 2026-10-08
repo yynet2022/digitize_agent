@@ -214,3 +214,33 @@ def test_color_tolerance_auto_scaling(temp_dir: Path) -> None:
     )
     assert res_255.get("status") == "success"
     assert res_255["point_count"] > 0
+
+
+def test_extract_x_range_and_smooth_filter(temp_dir: Path) -> None:
+    """x_range による区間制限と smooth_filter による外れ値除去を検証。"""
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    # 太さ3の青線 (x: 10..90, y: 50)
+    cv2.line(img, (10, 50), (90, 50), (255, 0, 0), 3)
+    # 外れ値スパイク (x: 40, y: 15)
+    cv2.circle(img, (40, 15), 2, (255, 0, 0), -1)
+    img[48:53, 38:43] = (255, 255, 255)  # 元の y=50 付近を白に消す
+
+    img_path = str(temp_dir / "smooth_test.png")
+    cv2.imwrite(img_path, img)
+
+    # x_range: [20, 60] で抽出、かつ smooth_filter 有効
+    res = extract_plot_pixels_by_color(
+        image_path=img_path,
+        color_preset="blue",
+        x_range=[20, 60],
+        smooth_filter=True,
+        max_jump=15.0,
+    )
+    assert res.get("status") == "success"
+    pts = res["pixel_points"]
+    xs = [p[0] for p in pts]
+    assert min(xs) >= 20
+    assert max(xs) <= 60
+    # 外れ値 (x=40, y=10) は除去されていること
+    x40_pts = [p for p in pts if p[0] == 40]
+    assert len(x40_pts) == 0 or abs(x40_pts[0][1] - 50) <= 5

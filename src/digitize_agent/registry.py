@@ -16,6 +16,7 @@ from digitize_agent.tools import (
     detect_plot_colors,
     extract_plot_pixels_by_color,
     extract_vector_curve_points,
+    get_workflow_instructions,
     inspect_pdf_primitives,
     ocr_region_text,
     render_verification_overlay,
@@ -37,6 +38,7 @@ TOOL_REGISTRY: dict[str, ToolFunction] = {
     "extract_vector_curve_points": extract_vector_curve_points,
     "calibrate_and_convert_coordinates": calibrate_and_convert_coordinates,
     "render_verification_overlay": render_verification_overlay,
+    "get_workflow_instructions": get_workflow_instructions,
 }
 
 

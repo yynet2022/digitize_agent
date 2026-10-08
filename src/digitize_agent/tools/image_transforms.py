@@ -18,47 +18,56 @@ class CropAndTransformInput(BaseModel):
 
     image_path: str | None = Field(
         default=None,
-        description="Path to the source image file.",
+        description="Path to the source raster image file.",
     )
     pdf_path: str | None = Field(
         default=None,
-        description="Path to the source PDF file.",
+        description=(
+            "Path to the source PDF file (rendered at custom DPI directly)."
+        ),
     )
     page_number: int = Field(
         default=0,
         ge=0,
-        description="0-indexed PDF page number.",
+        description="0-indexed PDF page number (default: 0).",
     )
     dpi: float = Field(
         default=300.0,
         gt=0,
-        description="Rendering DPI when extracting from PDF.",
+        description=(
+            "Rendering resolution (DPI) when extracting from PDF "
+            "(default: 300.0)."
+        ),
     )
     bbox: list[float] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
-        description="Bounding box [x_min, y_min, x_max, y_max].",
+        description="Explicit bounding box [x_min, y_min, x_max, y_max].",
     )
     caption_bbox: list[float] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
         description=(
-            "Optional caption bbox [x0, y0, x1, y1] (pt) to auto-estimate "
-            "figure area directly above it."
+            "Optional caption bbox [x0, y0, x1, y1] in PDF points (from "
+            "search_pdf_primitives) to estimate plot area above it."
         ),
     )
     bbox_mode: Literal["pixel", "point"] = Field(
         default="pixel",
         description="Coordinate unit of bbox: 'pixel' or 'point' (72 DPI pt).",
     )
-    deskew: bool = Field(default=False, description="Apply deskewing.")
+    deskew: bool = Field(
+        default=False,
+        description="Whether to apply Hough transform-based deskewing.",
+    )
     enhance_contrast: bool = Field(
-        default=False, description="Apply CLAHE enhancement."
+        default=False,
+        description="Whether to apply CLAHE contrast enhancement.",
     )
     output_path: str = Field(
-        description="Destination path for the cropped image."
+        description="Target output image file path (PNG recommended).",
     )
 
 
@@ -230,25 +239,39 @@ def crop_and_transform_region(
     deskew: bool = False,
     enhance_contrast: bool = False,
 ) -> dict[str, Any]:
-    """指定バウンディングボックスの領域を切り出し、傾き補正や強調を行う。
+    """画像または PDF から指定領域をクロップし、前処理を施して保存する。
 
-    画像ファイル、または PDF ファイルから直接指定 DPI でレンダリングして
-    指定領域をクロップ保存します。caption_bbox 指定時は自動推定します。
+    PDF ページから任意 DPI（標準: 300 DPI）で直接レンダリング切り出し、または
+    既存画像から領域をクロップします。caption_bbox を渡すことでキャプション
+    直上の図表領域全体をスマートに自動推定（estimated_bbox）できます。
+    ハフ変換による傾き補正（deskew）や CLAHE 強調も選択可能です。
+
+    推奨ワークフロー:
+        1. search_pdf_primitives で得たキャプション bbox を caption_bbox に
+           渡し、pdf_path, page_number, output_path を指定して実行。
+        2. 得られた estimated_bbox（PDF points）は、次段の auto_calibrate_axes
+           の crop_bbox_points にそのまま渡すことで、PDF 埋め込みテキストとの
+           高精度な座標照合が可能になります。
+        3. 保存された画像 (output_path) を detect_axes_and_ticks に渡す。
 
     Args:
-        output_path: 保存先のファイルパス。
-        bbox: [x_min, y_min, x_max, y_max] の切り出し範囲。
-        caption_bbox: キャプションの [x0, y0, x1, y1] (pt単位)。
-        image_path: 元画像ファイルへのパス (pdf_path と排他または優先)。
-        pdf_path: 元 PDF ファイルへのパス。
-        page_number: PDF の対象ページ番号 (0-indexed)。
-        dpi: PDF レンダリング解像度 (DPI)。
-        bbox_mode: bbox の単位 ("pixel" または "point")。
-        deskew: 傾き検出と補正を行うフラグ。
-        enhance_contrast: CLAHE によるコントラスト強調フラグ。
+        output_path: クロップ画像の保存先ファイルパス (PNG 推奨)。
+        bbox: 明示的な切り出し矩形 [x_min, y_min, x_max, y_max]。
+        caption_bbox: キャプションの [x0, y0, x1, y1] (PDF pt単位)。
+        image_path: 元画像ファイルパス (ラスタ画像からの切り出し時)。
+        pdf_path: 元 PDF ファイルパス (PDF からの直接レンダリング時)。
+        page_number: PDF の対象ページ番号 (0-indexed、標準: 0)。
+        dpi: PDF レンダリング解像度 (DPI、高精度解析には標準 300.0 推奨)。
+        bbox_mode: bbox の座標単位 ("pixel" または "point")。
+        deskew: ハフ変換による傾き検出・自動補正を行うか (標準: False)。
+        enhance_contrast: CLAHE による局所コントラスト強調を行うか。
 
     Returns:
-        dict[str, Any]: 処理結果情報またはエラーメッセージ。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - output_path: 保存された画像パス。
+            - image_size: [width, height] ピクセル。
+            - estimated_bbox: PDF 上の推定図表矩形 [x0, y0, x1, y1] (pt単位)。
     """
     try:
         validated = CropAndTransformInput(

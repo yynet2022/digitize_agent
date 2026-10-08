@@ -18,6 +18,9 @@ from digitize_agent.tools.geometry_detect import (
 from digitize_agent.tools.image_transforms import (
     crop_and_transform_region,
 )
+from digitize_agent.tools.instruction_tools import (
+    get_workflow_instructions,
+)
 from digitize_agent.tools.ocr_tools import (
     ocr_region_text,
 )
@@ -45,4 +48,5 @@ __all__ = [
     "extract_vector_curve_points",
     "calibrate_and_convert_coordinates",
     "render_verification_overlay",
+    "get_workflow_instructions",
 ]

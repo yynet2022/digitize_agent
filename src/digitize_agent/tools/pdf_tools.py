@@ -15,13 +15,20 @@ from pydantic import BaseModel, Field
 class InspectPdfPrimitivesInput(BaseModel):
     """inspect_pdf_primitives 関数の入力バリデーションモデル。"""
 
-    pdf_path: str = Field(description="Path to the PDF file.")
-    page_number: int = Field(default=0, ge=0, description="0-indexed page.")
+    pdf_path: str = Field(description="Path to the PDF file to inspect.")
+    page_number: int = Field(
+        default=0,
+        ge=0,
+        description="0-indexed target page number (default: 0).",
+    )
     bbox_filter: list[float] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
-        description="Optional [x0, y0, x1, y1] bounding box in points.",
+        description=(
+            "Optional bounding box [x0, y0, x1, y1] in points to filter "
+            "elements within a specific region."
+        ),
     )
 
 
@@ -50,13 +57,31 @@ def inspect_pdf_primitives(
 ) -> dict[str, Any]:
     """PDF から直接テキスト要素とベクター罫線を抽出する。
 
+    ラスター変換を経由せず、PDF 内部の埋め込みテキスト（座標、フォントサイズ）
+    およびベクターパス（罫線・ストローク）を直接抽出します。
+    対象ページが電子ベクター PDF かスキャン画像かを判定し、ベクター抽出
+    （extract_vector_curve_points）とラスタ画像色抽出
+    （extract_plot_pixels_by_color）のどちらを採用すべきかを判断するのに役立ちます。
+
+    推奨ワークフロー:
+        1. search_pdf_primitives で見つけたページに対して本関数を実行。
+        2. is_scanned が False かつ vector_lines が多数ある場合:
+           -> ベクター抽出 (extract_vector_curve_points) パイプラインを選択。
+        3. is_scanned が True またはグラフが画像埋め込みの場合:
+           -> クロップ & ラスタ色抽出 (crop_and_transform_region ->
+              extract_plot_pixels_by_color) パイプラインを選択。
+
     Args:
         pdf_path: 対象 PDF ファイルのパス。
-        page_number: 0 から始まる対象ページ番号。
-        bbox_filter: [x0, y0, x1, y1] で指定する抽出範囲フィルタ。
+        page_number: 0 から始まる対象ページ番号 (標準: 0)。
+        bbox_filter: [x0, y0, x1, y1] で指定する抽出範囲フィルタ (PDF points)。
 
     Returns:
-        dict[str, Any]: 抽出結果辞書、またはエラー情報辞書。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - is_scanned: 埋め込みテキストがなくスキャン画像とみなされるか。
+            - text_elements: テキスト文字列、bbox、フォントサイズのリスト。
+            - vector_lines: ベクター罫線の座標および色情報のリスト。
     """
     try:
         validated = InspectPdfPrimitivesInput(
@@ -176,14 +201,27 @@ def search_pdf_primitives(
 ) -> dict[str, Any]:
     """PDF 全ページから指定キーワードを検索し、出現ページと領域を返す。
 
+    指定したキーワード（例: 'Figure 5', 'Fig. 4', 'Table 1'）を PDF 内から
+    高速検索し、合致したページ番号（0-indexed）、バウンディングボックス
+    （PDF points）、および前後の文脈スニペットを返却します。
+
+    推奨ワークフロー:
+        1. 論文デジタイズの最初のステップとして本関数を実行。
+        2. 得られた matches の中から対象図表のキャプション bbox を特定。
+        3. その bbox を crop_and_transform_region の
+           caption_bbox に渡すことで、直上のグラフ領域を自動クロップできます。
+
     Args:
         pdf_path: 対象 PDF ファイルのパス。
-        query: 検索対象テキスト（例: 'Figure 5', 'Table 1'）。
-        case_sensitive: 大文字小文字を区別するかどうか。
-        max_matches: 返却する最大一致件数。
+        query: 検索対象テキスト（例: 'Figure 5', 'Fig.'）。
+        case_sensitive: 大文字小文字を区別するかどうか (標準: False)。
+        max_matches: 返却する最大一致件数 (標準: 50)。
 
     Returns:
-        dict[str, Any]: 一致リスト（ページ番号、bbox、テキスト文脈）。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - total_matches: 一致した総件数。
+            - matches: 各一致の詳細リスト (page_number, bbox, snippet)。
     """
     try:
         validated = SearchPdfPrimitivesInput(

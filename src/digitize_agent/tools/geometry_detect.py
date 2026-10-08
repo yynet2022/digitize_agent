@@ -6,7 +6,7 @@
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import numpy as np
@@ -14,17 +14,122 @@ import pymupdf as fitz
 from pydantic import BaseModel, Field
 from scipy.signal import find_peaks
 
+from digitize_agent.tools.color_extractor import rgb_to_hsv_bounds
+
 
 class DetectAxesAndTicksInput(BaseModel):
     """detect_axes_and_ticks 関数の入力バリデーションモデル。"""
 
-    image_path: str = Field(description="Path to the plot image file.")
+    image_path: str = Field(
+        description=(
+            "Path to the cropped plot image file (e.g. from "
+            "crop_and_transform_region)."
+        )
+    )
     min_line_length_ratio: float = Field(
         default=0.3,
         ge=0.05,
         le=1.0,
-        description="Minimum line length ratio relative to image size.",
+        description=(
+            "Minimum line length ratio relative to image size (default: 0.3)."
+        ),
     )
+    detect_box_frame: bool = Field(
+        default=True,
+        description=(
+            "Whether to detect rectangular box frame enclosing plot area. "
+            "Essential for qualitative/normalized plots (default: True)."
+        ),
+    )
+
+
+def _detect_box_frame(
+    image: np.ndarray,
+    min_area_ratio: float = 0.15,
+) -> dict[str, Any] | None:
+    """プロット画像から外枠（Box Frame）矩形を検出する。
+
+    Args:
+        image: BGR 画像配列。
+        min_area_ratio: 画像全体に対する最小面積比率。
+
+    Returns:
+        dict[str, Any] | None: 外枠および内寸情報辞書、未検出時は None。
+    """
+    height, width = image.shape[:2]
+    total_area = height * width
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, bin_inv = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    contours, hierarchy = cv2.findContours(
+        bin_inv, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours or hierarchy is None:
+        return None
+
+    candidates: list[tuple[int, int, int, int, float, int]] = []
+    for i, cnt in enumerate(contours):
+        area = cv2.contourArea(cnt)
+        if area < total_area * min_area_ratio or area > total_area * 0.98:
+            continue
+
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+        if len(approx) == 4:
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect = w / float(max(1, h))
+            if 0.3 <= aspect <= 4.0:
+                rect_ratio = area / float(max(1, w * h))
+                if rect_ratio >= 0.7:
+                    candidates.append((x, y, w, h, area, i))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: c[4], reverse=True)
+    best_x, best_y, best_w, best_h, best_area, best_idx = candidates[0]
+
+    # 子輪郭（内側枠線）の探索
+    inner_box = None
+    child_idx = hierarchy[0][best_idx][2]
+    inner_cands = []
+    while child_idx != -1:
+        c_cnt = contours[child_idx]
+        cx, cy, cw, ch = cv2.boundingRect(c_cnt)
+        if cw > best_w * 0.7 and ch > best_h * 0.7:
+            inner_cands.append((cx, cy, cw, ch, cv2.contourArea(c_cnt)))
+        child_idx = hierarchy[0][child_idx][0]
+
+    if inner_cands:
+        inner_cands.sort(key=lambda c: c[4], reverse=True)
+        ix, iy, iw, ih, _ = inner_cands[0]
+        inner_box = [int(ix), int(iy), int(ix + iw), int(iy + ih)]
+    else:
+        pad = max(2, min(8, int(min(best_w, best_h) * 0.01)))
+        inner_box = [
+            int(best_x + pad),
+            int(best_y + pad),
+            int(best_x + best_w - pad),
+            int(best_y + best_h - pad),
+        ]
+
+    outer_box = [
+        int(best_x),
+        int(best_y),
+        int(best_x + best_w),
+        int(best_y + best_h),
+    ]
+    confidence = min(1.0, best_area / (total_area * 0.4))
+
+    return {
+        "outer_bbox": outer_box,
+        "inner_bbox": inner_box,
+        "width": int(inner_box[2] - inner_box[0]),
+        "height": int(inner_box[3] - inner_box[1]),
+        "confidence": round(float(confidence), 3),
+    }
 
 
 def _find_axis_line(
@@ -56,20 +161,41 @@ def _find_axis_line(
 def detect_axes_and_ticks(
     image_path: str,
     min_line_length_ratio: float = 0.3,
+    detect_box_frame: bool = True,
 ) -> dict[str, Any]:
-    """グラフ画像から座標軸線および目盛り線のピクセル位置を特定する。
+    """グラフ画像から座標軸線、目盛り線、および外枠矩形を検出する。
+
+    モルフォロジー演算とプロジェクション解析により、主軸（水平X軸・垂直Y軸）
+    および目盛り線（Tick marks）のピクセル位置を検出します。
+    また外枠で囲まれたグラフ（Box frame）の内寸矩形（inner_bbox）も自動検出
+    するため、目盛り数値のない定性グラフや任意単位(a.u.)グラフの正規化校正
+    （auto_calibrate_axes の mode='normalized'）にもそのまま活用できます。
+
+    推奨ワークフロー:
+        1. crop_and_transform_region でクロップした画像に対して実行。
+        2. 出力の x_axis, y_axis, box_frame を確認。
+        3. 通常グラフなら auto_calibrate_axes(mode='tick_matched')、
+           目盛り数字のないグラフなら auto_calibrate_axes(mode='normalized',
+           box_frame_bbox=result['box_frame']['inner_bbox']) を呼び出す。
 
     Args:
         image_path: 対象グラフ画像のファイルパス。
-        min_line_length_ratio: 軸と見なす最小長比率。
+        min_line_length_ratio: 軸と見なす最小長比率 (0.05〜1.0、標準: 0.3)。
+        detect_box_frame: 外枠矩形（Box Frame）を検出するかどうか。
 
     Returns:
-        dict[str, Any]: X軸・Y軸および目盛り候補の座標辞書、またはエラー。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - x_axis: 水平軸ピクセル位置 y_pixel および X範囲 x_range。
+            - y_axis: 垂直軸ピクセル位置 x_pixel および Y範囲 y_range。
+            - ticks: x_ticks, y_ticks のピクセル位置候補リスト。
+            - box_frame: 外枠矩形情報 (outer_bbox, inner_bbox, confidence)。
     """
     try:
         validated = DetectAxesAndTicksInput(
             image_path=image_path,
             min_line_length_ratio=min_line_length_ratio,
+            detect_box_frame=detect_box_frame,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -142,6 +268,18 @@ def detect_axes_and_ticks(
     else:
         y_range = [0, x_axis_y]
 
+    # 外枠矩形（Box Frame）の検出
+    box_frame_info = None
+    if validated.detect_box_frame:
+        box_frame_info = _detect_box_frame(image)
+        if box_frame_info and box_frame_info["confidence"] >= 0.5:
+            ib = box_frame_info["inner_bbox"]
+            # 外枠内寸に基づいて軸位置・有効範囲を優先更新
+            x_axis_y = ib[3]
+            y_axis_x = ib[0]
+            x_range = [ib[0], ib[2]]
+            y_range = [ib[1], ib[3]]
+
     # 目盛り候補の検出
     # X目盛り: X軸近傍における垂直エッジ・線の突出ピーク
     band_y1 = max(0, x_axis_y - 12)
@@ -171,18 +309,24 @@ def detect_axes_and_ticks(
         "y_axis": {"x_pixel": y_axis_x, "y_range": y_range},
         "x_tick_candidates": sorted(x_ticks),
         "y_tick_candidates": sorted(y_ticks),
+        "box_frame": box_frame_info,
     }
 
 
 class DetectLegendRegionInput(BaseModel):
     """detect_legend_region 関数の入力バリデーションモデル。"""
 
-    image_path: str = Field(description="Path to the plot image file.")
+    image_path: str = Field(
+        description="Path to the plot image file (e.g. cropped plot image)."
+    )
     plot_bbox: list[int] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
-        description="Optional [x_min, y_min, x_max, y_max] of plot area.",
+        description=(
+            "Optional inner plot bounding box [x_min, y_min, x_max, y_max]. "
+            "If omitted, automatically estimated from axis/box frame."
+        ),
     )
 
 
@@ -190,15 +334,33 @@ def detect_legend_region(
     image_path: str,
     plot_bbox: list[int] | None = None,
 ) -> dict[str, Any]:
-    """プロット画像から凡例（Legend）領域の矩形を検出する。
+    """プロット画像から凡例（Legend）領域の矩形と項目代表色を検出する。
+
+    エッジ輪郭およびテキスト密集領域解析により、グラフ内の凡例ボックス
+    （または凡例テキスト群）を検出します。
+    検出された矩形領域はプロット線抽出時の誤検知防止用除外リスト
+    （exclude_bboxes）として利用でき、さらに凡例内の各色サンプルから
+    RGB・Hex・推奨 HSV 境界（suggested_hsv_lower / upper）を自動算出します。
+
+    推奨ワークフロー:
+        1. crop_and_transform_region または detect_axes_and_ticks の後に実行。
+        2. 得られた legend_bboxes を extract_plot_pixels_by_color の
+           exclude_bboxes に渡して凡例領域の誤抽出を防止。
+        3. legend_items 内の suggested_hsv_lower / upper を
+           extract_plot_pixels_by_color にそのまま渡して各曲線を色抽出。
 
     Args:
         image_path: 対象グラフ画像のファイルパス。
-        plot_bbox: プロット枠の矩形 [x_min, y_min, x_max, y_max]。
+        plot_bbox: プロット枠の内寸矩形 [x_min, y_min, x_max, y_max]。
 
     Returns:
-        dict[str, Any]: 検出された凡例矩形 [x_min, y_min, x_max, y_max]
-            および信頼度スコア。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - legend_detected: 凡例検出の成否 (bool)。
+            - legend_bbox / legend_bboxes: 凡例除外用矩形リスト。
+            - legend_items: 各項目の bbox、color_rgb、color_hex、
+              suggested_hsv_lower、suggested_hsv_upper。
+            - confidence: 凡例検出の信頼度スコア (0.0〜1.0)。
     """
     try:
         validated = DetectLegendRegionInput(
@@ -400,12 +562,15 @@ def _extract_legend_items(
         g_int = int(round(g_mean))
         b_int = int(round(b_mean))
         hex_code = f"#{r_int:02X}{g_int:02X}{b_int:02X}"
+        hsv_low, hsv_upp = rgb_to_hsv_bounds((r_int, g_int, b_int))
 
         items.append(
             {
                 "bbox": [x0 + bx, y0 + by, x0 + bx + bw, y0 + by + bh],
                 "color_rgb": [r_int, g_int, b_int],
                 "color_hex": hex_code,
+                "suggested_hsv_lower": hsv_low,
+                "suggested_hsv_upper": hsv_upp,
             }
         )
 
@@ -416,22 +581,32 @@ def _extract_legend_items(
 class AutoCalibrateAxesInput(BaseModel):
     """auto_calibrate_axes 関数の入力バリデーションモデル。"""
 
-    image_path: str = Field(description="Path to the cropped plot image.")
+    image_path: str = Field(description="Path to the cropped plot image file.")
     pdf_path: str | None = Field(
         default=None,
-        description="Optional PDF path for direct vector text retrieval.",
+        description=(
+            "Optional original PDF path for high-accuracy embedded text "
+            "matching. Highly recommended for digital PDFs."
+        ),
     )
-    page_number: int = Field(default=0, ge=0, description="PDF page number.")
+    page_number: int = Field(
+        default=0,
+        ge=0,
+        description="0-indexed PDF page number containing the plot.",
+    )
     crop_bbox_points: list[float] | None = Field(
         default=None,
         min_length=4,
         max_length=4,
-        description="Optional [x0, y0, x1, y1] crop bbox in PDF points.",
+        description=(
+            "Optional crop bbox [x0, y0, x1, y1] in PDF points (from "
+            "crop_and_transform_region estimated_bbox)."
+        ),
     )
     dpi: float = Field(
         default=300.0,
         gt=0,
-        description="DPI used when cropping the image.",
+        description="DPI used when the image was rendered (default: 300.0).",
     )
     x_tick_candidates: list[int] | None = Field(
         default=None,
@@ -440,6 +615,49 @@ class AutoCalibrateAxesInput(BaseModel):
     y_tick_candidates: list[int] | None = Field(
         default=None,
         description="Optional pre-detected Y tick pixel positions.",
+    )
+    mode: Literal["tick_matched", "normalized"] = Field(
+        default="tick_matched",
+        description=(
+            "Calibration mode: 'tick_matched' for standard plots with numeric "
+            "tick labels, or 'normalized' for qualitative / arbitrary-unit "
+            "(a.u.) plots without numeric ticks."
+        ),
+    )
+    normalized_domain_x: list[float] = Field(
+        default=[0.0, 1.0],
+        min_length=2,
+        max_length=2,
+        description=(
+            "Target domain [min, max] for X axis when mode='normalized' "
+            "(default: [0.0, 1.0])."
+        ),
+    )
+    normalized_domain_y: list[float] = Field(
+        default=[0.0, 1.0],
+        min_length=2,
+        max_length=2,
+        description=(
+            "Target domain [min, max] for Y axis when mode='normalized' "
+            "(default: [0.0, 1.0])."
+        ),
+    )
+    box_frame_bbox: list[int] | None = Field(
+        default=None,
+        min_length=4,
+        max_length=4,
+        description=(
+            "Optional plot inner frame [x0, y0, x1, y1] pixels for normalized "
+            "mode. If omitted, automatically detected via box frame contour."
+        ),
+    )
+    fallback_to_normalized: bool = Field(
+        default=True,
+        description=(
+            "Whether to automatically fall back to normalized mode if tick "
+            "label matching fails to find sufficient reference points "
+            "(default: True)."
+        ),
     )
 
 
@@ -451,25 +669,55 @@ def auto_calibrate_axes(
     dpi: float = 300.0,
     x_tick_candidates: list[int] | None = None,
     y_tick_candidates: list[int] | None = None,
+    mode: Literal["tick_matched", "normalized"] = "tick_matched",
+    normalized_domain_x: list[float] = [0.0, 1.0],
+    normalized_domain_y: list[float] = [0.0, 1.0],
+    box_frame_bbox: list[int] | None = None,
+    fallback_to_normalized: bool = True,
 ) -> dict[str, Any]:
     """目盛り線と数値ラベルを自動照合し座標キャリブレーション設定を推定する。
 
     検出された目盛りピクセル位置と、その近傍にある数値テキスト（PDF埋め込み
     または画像内テキスト）を幾何学的にペアリングし、X軸およびY軸の
-    キャリブレーションパラメータ（pixel_refs, val_refs）を自動算出します。
+    校正パラメータ（x_calibration, y_calibration）を自動算出します。
+    目盛り数値がない定性グラフや任意単位(a.u.)グラフ向けに、外枠矩形を基準とした
+    正規化モード（mode='normalized'）もサポートします。
+
+    推奨ワークフロー:
+        - パターン A (目盛り数値あり):
+          mode='tick_matched', pdf_path と crop_bbox_points を指定して実行。
+          高精度な目盛り数値ペアリングが行われます。
+        - パターン B (目盛り数値なし/定性/a.u.グラフ):
+          detect_axes_and_ticks で得た box_frame['inner_bbox'] を
+          box_frame_bbox に渡し、mode='normalized' を指定。
+          任意の正規化ドメイン（例: normalized_domain_x=[0.0, 1.0]）に校正。
+        - 戻り値の x_calibration と y_calibration をそのまま
+          calibrate_and_convert_coordinates に渡して CSV 変換を実行。
 
     Args:
         image_path: クロップされたプロット画像パス。
         pdf_path: 元 PDF パス（埋め込みテキストの直接取得用、推奨）。
         page_number: PDF のページ番号 (0-indexed)。
         crop_bbox_points: 切り出し時の PDF point バウンディングボックス。
-        dpi: クロップ画像の解像度 (DPI)。
+        dpi: クロップ画像の解像度 (DPI、標準: 300.0)。
         x_tick_candidates: 事前検出された X 目盛り候補ピクセル列。
         y_tick_candidates: 事前検出された Y 目盛り候補ピクセル列。
+        mode: キャリブレーションモード ('tick_matched' または 'normalized')。
+        normalized_domain_x: 正規化モード時の X 軸ドメイン範囲 [min, max]。
+        normalized_domain_y: 正規化モード時の Y 軸ドメイン範囲 [min, max]。
+        box_frame_bbox: 正規化用プロット内寸枠 [x0, y0, x1, y1]
+            （省略時は自動検出）。
+        fallback_to_normalized: 目盛り照合失敗時に正規化へ移行するか。
 
     Returns:
-        dict[str, Any]: x_calibration, y_calibration、マッチした目盛り一覧、
-            スケール倍率情報、またはエラー。
+        dict[str, Any]:
+            - status: "success" または "error"。
+            - mode: 使用されたモード ("tick_matched" または "normalized")。
+            - x_calibration: calibrate_and_convert_coordinates 用の
+              X軸設定辞書。
+            - y_calibration: calibrate_and_convert_coordinates 用の
+              Y軸設定辞書。
+            - matched_ticks: 照合に成功した目盛り情報。
     """
     try:
         validated = AutoCalibrateAxesInput(
@@ -480,6 +728,11 @@ def auto_calibrate_axes(
             dpi=dpi,
             x_tick_candidates=x_tick_candidates,
             y_tick_candidates=y_tick_candidates,
+            mode=mode,
+            normalized_domain_x=normalized_domain_x,
+            normalized_domain_y=normalized_domain_y,
+            box_frame_bbox=box_frame_bbox,
+            fallback_to_normalized=fallback_to_normalized,
         )
     except Exception as exc:
         return {"status": "error", "message": f"Validation error: {exc}"}
@@ -636,8 +889,50 @@ def auto_calibrate_axes(
                 "scale_type": "linear",
             }
 
+    calib_mode_used = "tick_matched"
+    need_norm = validated.mode == "normalized" or (
+        validated.fallback_to_normalized
+        and (x_calib is None or y_calib is None)
+    )
+
+    if need_norm:
+        if validated.box_frame_bbox is not None:
+            bx0, by0, bx1, by1 = validated.box_frame_bbox
+        elif axes_res.get("box_frame") and axes_res["box_frame"]["inner_bbox"]:
+            bx0, by0, bx1, by1 = axes_res["box_frame"]["inner_bbox"]
+        else:
+            bx0 = axes_res["x_axis"]["x_range"][0]
+            bx1 = axes_res["x_axis"]["x_range"][1]
+            by0 = axes_res["y_axis"]["y_range"][0]
+            by1 = axes_res["y_axis"]["y_range"][1]
+
+        if x_calib is None or validated.mode == "normalized":
+            x_calib = {
+                "pixel_refs": [float(bx0), float(bx1)],
+                "val_refs": [
+                    float(validated.normalized_domain_x[0]),
+                    float(validated.normalized_domain_x[1]),
+                ],
+                "scale_type": "linear",
+            }
+        if y_calib is None or validated.mode == "normalized":
+            y_calib = {
+                "pixel_refs": [float(by1), float(by0)],
+                "val_refs": [
+                    float(validated.normalized_domain_y[0]),
+                    float(validated.normalized_domain_y[1]),
+                ],
+                "scale_type": "linear",
+            }
+        calib_mode_used = (
+            "normalized"
+            if validated.mode == "normalized"
+            else "normalized_fallback"
+        )
+
     return {
         "status": "success",
+        "calibration_mode": calib_mode_used,
         "x_calibration": x_calib,
         "y_calibration": y_calib,
         "matched_x_ticks": matched_x,
