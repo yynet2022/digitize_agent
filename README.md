@@ -12,7 +12,7 @@ Claude Desktop や各種 AI コーディングアシスタント（Antigravity �
 
 * **完全ローカル & オフライン動作**: 外部通信なしで機密文書や未発表論文も安全に処理可能。
 * **MCP (Model Context Protocol) 標準対応**: FastMCP による stdio トランスポート対応。Claude Desktop や Antigravity 等に設定するだけで即座に連携。
-* **OpenAI Function Calling 互換**: 全 12 ツールの JSON Schema 定義（`schema.py`）および安全なディスパッチャ（`registry.py`）を完備。
+* **OpenAI Function Calling 互換**: 全 13 ツールの JSON Schema 定義（`schema.py`）および安全なディスパッチャ（`registry.py`）を完備。
 * **高精度な画像・ベクター処理パイプライン**:
   * PDF 内キーワード高速検索（`search_pdf_primitives`）による図表・キャプションの特定
   * キャプション bbox からの直上図表領域自動推定（`crop_and_transform_region` のスマートオートクロップ）
@@ -29,11 +29,11 @@ Claude Desktop や各種 AI コーディングアシスタント（Antigravity �
   * 線形および対数（Log）スケール対応の座標キャリブレーション、複数曲線の共通 X 格子線形補間（`resample_x_grid`, `num_grid_points`）、定義域外 NaN 処理（`extrapolate=False`）、横持ち（Wide: `x, c1, c2`）および縦持ち（Long: `x, y, curve`）CSV 出力
   * 複数曲線の自動色分けパレット描画と透過合成による適合度検証 (Visual Feedback)
 * **自己修復・エラー耐性**: パラメータ不正やファイル欠損時にもプロセスを落とさず、エージェントが再試行できる構造化エラーを返却。目盛り照合不足時の正規化モード自動フォールバックを完備。
-* **高いコード品質**: 全コードで PEP 8・最大行長 79 文字制限・型ヒント・docstring を遵守。全 75 件の単体テストをパス（テストカバレッジ 90% 以上）。
+* **高いコード品質**: 全コードで PEP 8・最大行長 79 文字制限・型ヒント・docstring を遵守。全 84 件の単体テストをパス（テストカバレッジ 90% 以上）。
 
 ---
 
-## 収録ツール一覧 (全 12 ツール)
+## 収録ツール一覧 (全 13 ツール)
 
 | ツール関数名 | 役割・機能概要 |
 | :--- | :--- |
@@ -128,7 +128,7 @@ Claude Desktop の設定ファイルに以下を追加します。
 }
 ```
 
-設定後、クライアントを再起動すると、全 12 種類のデジタイズツール群が自律的に呼び出せるようになります。
+設定後、クライアントを再起動すると、全 13 種類のデジタイズツール群が自律的に呼び出せるようになります。
 
 ---
 
@@ -346,6 +346,9 @@ digitize_agent/
 ├─ src/
 │    └─ digitize_agent/
 │          ├─ __init__.py
+│          ├─ data/            # パッケージ同梱データ
+│          │     ├─ __init__.py
+│          │     └─ instructions.md   # エージェント向け推奨ワークフロー指示書
 │          ├─ server.py        # MCP (Model Context Protocol) サーバー実装
 │          ├─ schema.py        # OpenAI Function Calling 互換 JSON Schema 定義
 │          ├─ registry.py      # 関数ディスパッチャー (名前と実関数の安全な実行管理)
@@ -353,12 +356,13 @@ digitize_agent/
 │                ├─ __init__.py
 │                ├─ pdf_tools.py          # Tool 1: inspect, Tool 2: search_pdf_primitives
 │                ├─ image_transforms.py   # Tool 3: crop_and_transform_region
-│                ├─ geometry_detect.py    # Tool 4: detect_axes, Tool 5: detect_legend_region
-│                ├─ ocr_tools.py          # Tool 6: ocr_region_text (PDFフォールバック)
-│                ├─ color_extractor.py    # Tool 7: detect_colors, Tool 8: extract_plot_pixels
-│                ├─ vector_curves.py      # Tool 9: extract_vector_curve_points
-│                ├─ calibration.py        # Tool 10: calibrate_and_convert_coordinates
-│                └─ visual_verifier.py    # Tool 11: render_verification_overlay
+│                ├─ geometry_detect.py    # Tool 4: detect_axes, Tool 5: detect_legend, Tool 6: auto_calibrate
+│                ├─ ocr_tools.py          # Tool 7: ocr_region_text (PDFフォールバック)
+│                ├─ color_extractor.py    # Tool 8: detect_colors, Tool 9: extract_plot_pixels
+│                ├─ vector_curves.py      # Tool 10: extract_vector_curve_points
+│                ├─ calibration.py        # Tool 11: calibrate_and_convert_coordinates
+│                ├─ visual_verifier.py    # Tool 12: render_verification_overlay
+│                └─ instruction_tools.py  # Tool 13: get_workflow_instructions
 └─ tests/                      # 単体テストスイート (pytest)
       ├─ conftest.py           # 合成データ・テストフィクスチャ
       ├─ test_pdf_tools.py
@@ -369,6 +373,7 @@ digitize_agent/
       ├─ test_vector_curves.py
       ├─ test_calibration.py
       ├─ test_visual_verifier.py
+      ├─ test_instruction_tools.py
       ├─ test_registry_and_schema.py
       └─ test_server.py
 ```

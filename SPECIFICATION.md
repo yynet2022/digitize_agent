@@ -38,6 +38,10 @@ dependencies = [
 ## 2. ツール一覧とパイプライン構成
 
 ```text
+[エージェント起動・タスク解析]
+   │
+   ├─> get_workflow_instructions (グラフ形式に応じた推奨パイプライン・パラメータ指針・トラブルシューティング取得)
+   │
 [入力ドキュメント (PDF / 画像)]
    │
    ├─ (PDF の場合: 構造解析・検索)
@@ -57,43 +61,60 @@ dependencies = [
    │     │
    │     └──> render_verification_overlay (複数曲線色分け透過オーバーレイ検証)
    │
-   └─ パターン B: ラスター画像グラフ (スキャン文書・写真)
+   ├─ パターン B: ラスター画像グラフ (スキャン文書・写真・数値目盛りあり)
+   │     │
+   │     ├──> crop_and_transform_region (領域クロップ・傾き自動補正・コントラスト強調)
+   │     │       │
+   │     │       ├──> detect_axes_and_ticks (座標軸・目盛りピクセル検出)
+   │     │       │
+   │     │       ├──> detect_legend_region (凡例ボックスの検出、除外矩形・項目色取得)
+   │     │       │
+   │     │       ├──> auto_calibrate_axes (目盛り線とOCRテキストの自動ペアリング校正: mode="tick_matched")
+   │     │       │
+   │     │       ├──> ocr_region_text (軸ラベル・目盛り数値の認識・PDFテキストフォールバック)
+   │     │       │
+   │     │       ├──> detect_plot_colors (画像内の主要プロット色を自動検出)
+   │     │       │
+   │     │       └──> extract_plot_pixels_by_color (RGB/Hex/HSV/許容誤差/除外領域指定による点抽出)
+   │     │
+   │     ├──> calibrate_and_convert_coordinates (実数値変換・共通X格子リサンプル・列名指定 CSV 出力)
+   │     │
+   │     └──> render_verification_overlay (再描画と元画像の重ね合わせ検証)
+   │
+   └─ パターン C: ラスター定性グラフ / 任意単位 (a.u.) / 規格化曲線 (目盛り数値なし)
          │
-         ├──> crop_and_transform_region (領域クロップ・傾き自動補正・コントラスト強調)
+         ├──> crop_and_transform_region (領域クロップ・DPI指定)
          │       │
-         │       ├──> detect_axes_and_ticks (座標軸・目盛りピクセル検出)
+         │       ├──> detect_axes_and_ticks (detect_box_frame=True による外枠矩形 inner_bbox 検出)
          │       │
-         │       ├──> detect_legend_region (凡例ボックスの検出、除外矩形・項目色取得)
+         │       ├──> detect_plot_colors / detect_legend_region (各曲線の代表色・推奨 HSV 範囲特定)
          │       │
-         │       ├──> auto_calibrate_axes (目盛り線とOCRテキストの自動ペアリング校正)
+         │       ├──> auto_calibrate_axes (外枠基準の正規化校正: mode="normalized", box_frame_bbox)
          │       │
-         │       ├──> ocr_region_text (軸ラベル・目盛り数値の認識・PDFテキストフォールバック)
-         │       │
-         │       ├──> detect_plot_colors (画像内の主要プロット色を自動検出)
-         │       │
-         │       └──> extract_plot_pixels_by_color (RGB/Hex/柔軟な許容誤差/除外領域指定による点抽出)
+         │       └──> extract_plot_pixels_by_color (smooth_filter=True, max_jump, x_range によるジャギ・ノイズ除去抽出)
          │
-         ├──> calibrate_and_convert_coordinates (実数値変換・共通X格子リサンプル・列名指定 CSV 出力)
+         ├──> calibrate_and_convert_coordinates (output_format="wide", extrapolate=False による NaN 安全補間 CSV 出力)
          │
-         └──> render_verification_overlay (再描画と元画像の重ね合わせ検証)
+         └──> render_verification_overlay (Wide 形式複数曲線の一括自動認識・色分け透過検証)
 ```
 
-### 全 12 ツール一覧表
+### 全 13 ツール一覧表
 
 | ツール関数名 | 役割・機能概要 |
 | :--- | :--- |
 | `inspect_pdf_primitives` | PDF からラスター変換を経由せず、直接埋め込まれたテキスト要素およびベクター罫線を抽出 |
 | `search_pdf_primitives` | PDF 全体または特定ページから指定キーワードを検索し、出現ページ、bbox、文脈スニペットを返却 |
 | `crop_and_transform_region` | 画像または PDF から直接指定 DPI で領域を切り出し（キャプション bbox からの図表領域自動推定にも対応）、傾き補正 (Deskew) や強調 (CLAHE) を適用 |
-| `detect_axes_and_ticks` | グラフ画像内の主軸（水平 X 軸・垂直 Y 軸）および目盛り線（Tick marks）のピクセル座標を幾何学的に検出 |
+| `detect_axes_and_ticks` | グラフ画像内の主軸（水平 X 軸・垂直 Y 軸）、目盛り線（Tick marks）、および四方外枠矩形（Box frame）のピクセル座標を検出 |
 | `detect_legend_region` | プロット画像内の凡例（Legend）矩形枠やテキストブロックを検出し、プロット抽出時の除外領域 (exclude_bboxes) および凡例項目ごとの代表色 (legend_items) を特定 |
-| `auto_calibrate_axes` | 検出された目盛り線と近傍の数値テキスト（PDF埋め込みテキストまたはOCR）を幾何学的に自動照合し、X軸・Y軸のキャリブレーションパラメータ（pixel_refs, val_refs, scale_multiplier）をワンストップで自動推定 |
+| `auto_calibrate_axes` | 検出された目盛り線と近傍数値テキストの幾何学的照合（mode="tick_matched"）または外枠内寸基準（mode="normalized"）により座標軸校正パラメータをワンストップ推定 |
 | `ocr_region_text` | 切り出し画像スニペットに対して Tesseract OCR を実行（PDF指定時は電子埋め込みテキストの直接抽出を優先フォールバック） |
 | `detect_plot_colors` | 画像内の主要プロット色（色名、代表 HSV 値、画素占有率）を自動検出し、色抽出のための推奨設定を提示 |
-| `extract_plot_pixels_by_color` | 色名プリセット、RGB配列、Hex値、正規化/絶対距離の双方に対応した柔軟な許容誤差 (color_tolerance)、抽出領域 (bbox)、除外領域 (exclude_bboxes) に基づきプロット点を高精度抽出 |
-| `extract_vector_curve_points` | PDF 内部のベクター描画命令から等間隔座標列をサンプリング。複数描画の一括抽出 (drawing_indices)、同色描画の自動統合 (group_by_color)、目盛り線除外、特定色線指定に対応 |
-| `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換。共通 X 格子への線形リサンプリング (resample_x_grid, num_grid_points) および横持ち (wide) / 縦持ち (long) CSV 出力に対応 |
-| `render_verification_overlay` | デジタイズされた CSV データを元画像の座標系へ逆変換して複数曲線を自動色分けした半透明オーバーレイ画像を生成し、適合度指標を算出 |
+| `extract_plot_pixels_by_color` | 色プリセット、RGB/Hex/HSV、局所中央値平滑化 (smooth_filter)、区間限定 (x_range)、除外領域に基づきプロット曲線を高精度抽出 |
+| `extract_vector_curve_points` | PDF 内部のベクター描画命令から等間隔座標列をサンプリング。複数描画の一括抽出 (drawing_indices)、同色描画の自動統合 (group_by_color)、目盛り線除外に対応 |
+| `calibrate_and_convert_coordinates` | 軸基準点に基づき線形/対数スケールで実数値へ変換。共通 X 格子線形補間、横持ち (wide) / 縦持ち (long) 形式、定義域外 NaN 処理 (extrapolate) に対応 |
+| `render_verification_overlay` | デジタイズされた CSV データを元画像の座標系へ逆変換し、複数曲線を自動色分けした半透明オーバーレイ画像を生成して適合度指標を算出 (Wide/Long形式対応) |
+| `get_workflow_instructions` | 各グラフ形式に応じた推奨パイプライン、パラメータ指定指針、自己修復トラブルシューティング手順（instructions.md）をオンデマンドで取得 |
 
 ---
 
@@ -316,13 +337,13 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
 * **ツール関数名**: `detect_axes_and_ticks`
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`, `scipy.signal`
 * **役割・機能**:
-グラフ画像内の主軸（X軸・Y軸）となる直線と、それに付随する目盛り線（Tick marks）のピクセル位置を幾何学的に特定します。
+グラフ画像内の主軸（X軸・Y軸）となる直線、目盛り線（Tick marks）のピクセル位置、および定性・任意単位グラフを囲む四方外枠矩形（Box frame）を幾何学的に特定します。
 * **OpenAI Function Calling 定義 (JSON Schema)**:
 
 ```json
 {
   "name": "detect_axes_and_ticks",
-  "description": "Detect horizontal and vertical coordinate axes, tick candidate positions, and bounding frame lines in a plot image.",
+  "description": "Detect horizontal and vertical coordinate axes, tick candidate positions, and bounding frame lines in a plot image. Use detect_box_frame=True for qualitative/a.u. plots.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -334,6 +355,11 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
         "type": "number",
         "description": "Minimum length ratio relative to image dimensions (default: 0.3).",
         "default": 0.3
+      },
+      "detect_box_frame": {
+        "type": "boolean",
+        "description": "Whether to detect the outer enclosing box frame (default: false).",
+        "default": false
       }
     },
     "required": ["image_path"]
@@ -345,11 +371,17 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
   * **引数**:
     * `image_path` (str): グラフ領域の画像パス。
     * `min_line_length_ratio` (float, 初期値: 0.3): 軸線と見なす最小長さ比。
+    * `detect_box_frame` (bool, 初期値: False): 四方外枠矩形（Box frame）の検出を実行するか。
   * **戻り値 (dict)**:
     * `x_axis`: `{"y_pixel": int, "x_range": [int, int]}` （X軸のYピクセル位置とX範囲）
     * `y_axis`: `{"x_pixel": int, "y_range": [int, int]}` （Y軸のXピクセル位置とY範囲）
     * `x_tick_candidates`: list[int] （検出された目盛りのXピクセル座標群）
     * `y_tick_candidates`: list[int] （検出された目盛りのYピクセル座標群）
+    * `box_frame` (dict | None): 検出された外枠情報（`outer_bbox`, `inner_bbox`, `width`, `height`, `confidence`）。未検出時は None。
+* **実装要件・アルゴリズム**:
+  * 二値化画像に対する水平・垂直モルフォロジー演算およびプロジェクションプロファイルによる主軸の特定。
+  * 主軸近傍の局所輝度勾配（エッジ強度）から `scipy.signal.find_peaks` により目盛り線の候補座標を抽出。
+  * `detect_box_frame=True` 時は、外周輪郭抽出（`cv2.findContours`）および多角形近似（`cv2.approxPolyDP`）により画像内の最大矩形枠を同定し、枠線幅を差し引いた内寸矩形 `inner_bbox` を算出。
 
 ---
 
@@ -451,6 +483,40 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
         "type": "array",
         "items": {"type": "integer"},
         "description": "Optional pre-detected Y tick pixel positions."
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["tick_matched", "normalized"],
+        "description": "Calibration mode: 'tick_matched' for plots with numeric tick labels, or 'normalized' for qualitative/a.u. plots.",
+        "default": "tick_matched"
+      },
+      "normalized_domain_x": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "Physical domain [x_min, x_max] for normalized mode (default: [0.0, 1.0]).",
+        "default": [0.0, 1.0]
+      },
+      "normalized_domain_y": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "Physical domain [y_min, y_max] for normalized mode (default: [0.0, 1.0]).",
+        "default": [0.0, 1.0]
+      },
+      "box_frame_bbox": {
+        "type": "array",
+        "items": {"type": "number"},
+        "minItems": 4,
+        "maxItems": 4,
+        "description": "Optional box frame inner_bbox [x0, y0, x1, y1] for normalized mode."
+      },
+      "fallback_to_normalized": {
+        "type": "boolean",
+        "description": "Automatically fallback to normalized mode if tick matching fails (default: true).",
+        "default": true
       }
     },
     "required": ["image_path"]
@@ -467,8 +533,14 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
     * `dpi` (float, 任意, 初期値: 300.0): クロップ画像の解像度 (DPI)。
     * `x_tick_candidates` (list[int], 任意): 事前検出された X 目盛り候補ピクセル列。
     * `y_tick_candidates` (list[int], 任意): 事前検出された Y 目盛り候補ピクセル列。
+    * `mode` (str, 初期値: `"tick_matched"`): 校正モード（`"tick_matched"` または `"normalized"`）。
+    * `normalized_domain_x` (list[float], 初期値: `[0.0, 1.0]`): 正規化モード時の X 軸物理値区間。
+    * `normalized_domain_y` (list[float], 初期値: `[0.0, 1.0]`): 正規化モード時の Y 軸物理値区間。
+    * `box_frame_bbox` (list[float], 任意): 正規化モード用のプロット外枠矩形 `[x0, y0, x1, y1]`。
+    * `fallback_to_normalized` (bool, 初期値: True): 目盛り照合不足時に自動で外枠正規化モードへ移行するか。
   * **戻り値 (dict)**:
     * `status` (str): `"success"` または `"error"`。
+    * `calibration_mode` (str): 適用された校正モード（`"tick_matched"` または `"normalized"`）。
     * `x_calibration` (dict): `{"pixel_refs": [float, float], "val_refs": [float, float], "scale_type": "linear"}`。
     * `y_calibration` (dict): `{"pixel_refs": [float, float], "val_refs": [float, float], "scale_type": "linear"}`。
     * `scale_multiplier` (float | None): 軸ラベル等から検出された乗数（例: $10^{32} \rightarrow 1.0\times 10^{32}$）。
@@ -476,10 +548,13 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
     * `matched_y_ticks` (list[dict]): ペアリングされた Y 目盛りピクセルと数値。
 * **実装要件・アルゴリズム**:
   * `detect_axes_and_ticks` により画像内の X 軸・Y 軸位置および目盛り線を検出。
-  * `pdf_path` 指定時は `page.get_text("dict")` を用いて解像度劣化のない正確なテキスト座標を取得し、クロップオフセットと DPI スケールを適用して画像ピクセル座標系へ投影。
-  * 正規表現による指数表記・乗数テキスト（`1eX`, `10^X`, `×10^X` 等）の解析。
-  * 各目盛り線ピクセルから許容距離内（X軸: 横方向近傍かつ軸直下、Y軸: 縦方向近傍かつ軸左側）に位置する数値をユークリッド距離最小化で幾何学マッチング。
-  * 得られた照合ペアから両端の代表 2 点を選定して `pixel_refs` と `val_refs` を構成。
+  * `mode="tick_matched"` 時:
+    * `pdf_path` 指定時は `page.get_text("dict")` を用いて解像度劣化のない正確なテキスト座標を取得し、クロップオフセットと DPI スケールを適用して画像ピクセル座標系へ投影。
+    * 正規表現による指数表記・乗数テキスト（`1eX`, `10^X`, `×10^X` 等）の解析。
+    * 各目盛り線ピクセルから許容距離内に位置する数値をユークリッド距離最小化で幾何学マッチング。
+    * 照合成功数が不足し `fallback_to_normalized=True` の場合は、自動的に外枠矩形ベースの正規化モードへ移行。
+  * `mode="normalized"` 時:
+    * `box_frame_bbox`（未指定時は自動検出）の内寸矩形に基づき、X軸下端を `normalized_domain_x`、Y軸左端（上下反転考慮）を `normalized_domain_y` にマッピングして校正パラメータを生成。
 
 ---
 
@@ -683,6 +758,30 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
         "enum": ["continuous_line", "scatter_centroids"],
         "description": "Extraction mode.",
         "default": "continuous_line"
+      },
+      "smooth_filter": {
+        "type": "boolean",
+        "description": "Apply local median filtering and outlier rejection to continuous lines (default: false).",
+        "default": false
+      },
+      "max_jump": {
+        "type": "number",
+        "description": "Maximum allowed vertical jump in pixels for smooth_filter (default: 15.0).",
+        "default": 15.0
+      },
+      "x_range": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "Restrict extraction to pixel range [x_min, x_max]."
+      },
+      "y_range": {
+        "type": "array",
+        "items": {"type": "integer"},
+        "minItems": 2,
+        "maxItems": 2,
+        "description": "Restrict extraction to pixel range [y_min, y_max]."
       }
     },
     "required": ["image_path"]
@@ -702,6 +801,10 @@ PDF ドキュメント内から指定されたキーワード（大文字小文�
     * `bbox` (list[float], 任意): 抽出領域を制限するバウンディングボックス `[x0, y0, x1, y1]`。
     * `exclude_bboxes` (list[list[float]], 任意): 除外する矩形領域リスト（凡例ボックス等）。
     * `extract_mode` (str, 初期値: "continuous_line"): `"continuous_line"` または `"scatter_centroids"`。
+    * `smooth_filter` (bool, 初期値: False): 連続線抽出時に局所中央値フィルタと外れ値除去（平滑化）を適用するか。
+    * `max_jump` (float, 初期値: 15.0): `smooth_filter=True` 適用時に許容する最大垂直段差（ピクセル）。
+    * `x_range` (list[int], 任意): 抽出対象とする X ピクセル範囲 `[x_min, x_max]`。
+    * `y_range` (list[int], 任意): 抽出対象とする Y ピクセル範囲 `[y_min, y_max]`。
   * **戻り値 (dict)**:
     * `status` (str): `"success"`。
     * `point_count` (int): 抽出されたデータ点数。
@@ -924,7 +1027,7 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
         "type": "string",
         "enum": ["long", "wide"],
         "description": "Output CSV layout: 'long' (tidy) or 'wide' (matrix).",
-        "default": "long"
+        "default": "wide"
       },
       "resample_x_grid": {
         "type": "array",
@@ -935,6 +1038,11 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
         "type": "integer",
         "description": "Number of interpolation points for shared X grid.",
         "default": 100
+      },
+      "extrapolate": {
+        "type": "boolean",
+        "description": "Whether to extrapolate curves beyond their defined range (default: false, leaves NaN).",
+        "default": false
       }
     },
     "required": ["x_calibration", "y_calibration", "output_csv_path"]
@@ -950,9 +1058,10 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
     * `curves` (list[dict], 任意): 複数曲線の辞書リスト（`label`, `name`, `curve_name` のいずれかでラベル指定可能）。
     * `column_names` (list[str], 初期値: `["x", "y"]`): CSV の X/Y 列名。
     * `curve_label` (str, 任意): 単一曲線時のラベル名。
-    * `output_format` (str, 初期値: `"long"`): 出力レイアウト。`"long"`（縦持ち形式: 列 `x, y, curve`）または `"wide"`（横持ちマトリクス形式: 列 `x, curve1, curve2, ...`）。
+    * `output_format` (str, 初期値: `"wide"`): 出力レイアウト。`"wide"`（横持ちマトリクス形式: 列 `x, curve1, curve2, ...`）または `"long"`（縦持ち形式: 列 `x, y, curve`）。
     * `resample_x_grid` (list[float], 任意): リサンプリング用の明示的な共通 X 格子配列。
     * `num_grid_points` (int, 任意): 共通 X 格子の等間隔補間点数（省略時は 100）。
+    * `extrapolate` (bool, 初期値: False): 各曲線の測定範囲外を外挿するか（False 時は定義域外が `NaN` となり端点平坦化を防止）。
   * **戻り値 (dict)**:
     * `status` (str): `"success"`。
     * `csv_path` (str): 保存された CSV パス。
@@ -967,14 +1076,15 @@ DPI スケーリングおよびクロップ原点オフセットの自動変換�
 * **内部使用モジュール**: `cv2` (OpenCV), `numpy`, `pandas`
 * **役割・機能**:
 デジタイズされた CSV データを元画像の座標系へ逆変換し、元画像の上に半透明オーバーレイ画像を生成して保存します。
-CSV 内に複数曲線が含まれる場合（`curve` カラム等）は、曲線間で余計なジャンプ線が引かれないよう自動グループ化し、それぞれ異なる鮮やかな蛍光色（シアン、マゼンタ、イエロー、グリーン等）で色分け描画します。
+縦持ち形式（`curve` 列）および横持ち Wide 形式（列 `x, curve1, curve2, ...`）の双方を自動認識し、各曲線を異なる鮮やかな蛍光色（シアン、マゼンタ、イエロー、グリーン等）で色分け描画します。
+`extrapolate=False` により生じた `NaN`（欠損値）は安全にスキップされ、エラーを起こさず有効な測定点のみを描画します。
 エッジ重なり度合いに基づく客観的な適合度スコア（`alignment_metric`: 0.0〜1.0）を算出します。
 * **OpenAI Function Calling 定義 (JSON Schema)**:
 
 ```json
 {
   "name": "render_verification_overlay",
-  "description": "Re-plot digitized numerical data onto the original cropped image as a multi-color semi-transparent overlay to verify alignment.",
+  "description": "Re-plot digitized numerical data onto the original cropped image as a multi-color semi-transparent overlay to verify alignment. Supports both wide and long CSV formats with safe NaN skipping.",
   "parameters": {
     "type": "object",
     "properties": {
@@ -1000,7 +1110,7 @@ CSV 内に複数曲線が含まれる場合（`curve` カラム等）は、曲�
       },
       "curve_column": {
         "type": "string",
-        "description": "CSV column name for grouping curves.",
+        "description": "CSV column name for grouping curves in long format.",
         "default": "curve"
       }
     },
@@ -1021,12 +1131,60 @@ CSV 内に複数曲線が含まれる場合（`curve` カラム等）は、曲�
     * `csv_path` (str): デジタイズ結果 CSV パス。
     * `x_calibration`, `y_calibration`: 座標マッピング定義。
     * `output_overlay_path` (str): オーバーレイ画像出力先。
-    * `curve_column` (str, 初期値: "curve"): 曲線グループ分け列名。
+    * `curve_column` (str, 初期値: "curve"): 縦持ち形式 CSV 時の曲線グループ分け列名。
   * **戻り値 (dict)**:
     * `status` (str): `"success"`。
     * `verification_image_path` (str): 生成画像パス。
     * `alignment_metric` (float): 一致率指標スコア (0.0〜1.0)。
     * `curves_rendered` (int): 描画された曲線本数。
+
+---
+
+### Tool 13: `get_workflow_instructions`
+
+* **ツール関数名**: `get_workflow_instructions`
+* **内部使用モジュール**: `importlib.resources`, `pathlib`
+* **役割・機能**:
+AI エージェントが作業を開始する際、グラフ形式（電子ベクター、ラスタ数値目盛り、ラスタ定性/任意単位）に応じた最適なツール実行シーケンス、パラメータの勘所、および自己修復トラブルシューティング手順（`instructions.md`）をオンデマンドで取得・提供します。
+パッケージ同梱データとして wheel 内に内包されているため、`pip install` された環境でも完全オフラインで動作します。
+* **OpenAI Function Calling 定義 (JSON Schema)**:
+
+```json
+{
+  "name": "get_workflow_instructions",
+  "description": "Retrieve best-practice workflows, recommended parameter guidelines, and troubleshooting instructions for digitize-agent. Call this tool first to determine optimal tool sequence (vector vs raster numeric vs qualitative/normalized) and self-healing strategies.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": {
+        "type": "string",
+        "enum": [
+          "all",
+          "vector",
+          "raster_numeric",
+          "raster_qualitative",
+          "best_practices",
+          "troubleshooting"
+        ],
+        "description": "Topic to retrieve: 'all' (complete instructions), 'vector' (Pattern A: native digital vector plots), 'raster_numeric' (Pattern B: raster with tick labels), 'raster_qualitative' (Pattern C: arbitrary units / normalized / Raman / XRD / spectra plots), 'best_practices' (parameter reference table), or 'troubleshooting' (self-healing tips).",
+        "default": "all"
+      }
+    },
+    "required": []
+  }
+}
+```
+
+* **入出力仕様**:
+  * **引数**:
+    * `topic` (str, 初期値: `"all"`): 取得対象トピック（`"all"`, `"vector"`, `"raster_numeric"`, `"raster_qualitative"`, `"best_practices"`, `"troubleshooting"`）。
+  * **戻り値 (dict)**:
+    * `topic` (str): 要求されたトピック名。
+    * `content` (str): 抽出されたマークダウン指示書テキスト。
+    * `available_topics` (list[str]): 利用可能なトピック一覧。
+* **実装要件・アルゴリズム**:
+  * `importlib.resources.files("digitize_agent.data").joinpath("instructions.md")` によりパッケージ内リソースから UTF-8 テキストを読み込み（開発環境用フォールバックも完備）。
+  * 指定トピックに応じたセクションマーカー検索により、必要なガイドラインのみを即座に抽出して返却。
 
 ---
 
@@ -1044,19 +1202,23 @@ digitize_agent/
 ├─ src/
 │    └─ digitize_agent/
 │          ├─ __init__.py
-│          ├─ server.py        # MCP (Model Context Protocol) サーバー実装 (全11ツール)
-│          ├─ schema.py        # OpenAI Function Calling 互換 JSON Schema 定義 (全11ツール)
+│          ├─ data/            # パッケージ同梱データ
+│          │     ├─ __init__.py
+│          │     └─ instructions.md   # エージェント向け推奨ワークフロー指示書
+│          ├─ server.py        # MCP (Model Context Protocol) サーバー実装 (全13ツール)
+│          ├─ schema.py        # OpenAI Function Calling 互換 JSON Schema 定義 (全13ツール)
 │          ├─ registry.py      # 関数ディスパッチャー (名前と実関数の安全な実行管理)
 │          └─ tools/           # 各デジタイズツールの実装
 │                ├─ __init__.py
 │                ├─ pdf_tools.py          # Tool 1: inspect, Tool 2: search_pdf_primitives
 │                ├─ image_transforms.py   # Tool 3: crop_and_transform_region
-│                ├─ geometry_detect.py    # Tool 4: detect_axes, Tool 5: detect_legend_region
-│                ├─ ocr_tools.py          # Tool 6: ocr_region_text (PDFフォールバック)
-│                ├─ color_extractor.py    # Tool 7: detect_colors, Tool 8: extract_plot_pixels
-│                ├─ vector_curves.py      # Tool 9: extract_vector_curve_points
-│                ├─ calibration.py        # Tool 10: calibrate_and_convert_coordinates
-│                └─ visual_verifier.py    # Tool 11: render_verification_overlay
+│                ├─ geometry_detect.py    # Tool 4: detect_axes, Tool 5: detect_legend, Tool 6: auto_calibrate
+│                ├─ ocr_tools.py          # Tool 7: ocr_region_text (PDFフォールバック)
+│                ├─ color_extractor.py    # Tool 8: detect_colors, Tool 9: extract_plot_pixels
+│                ├─ vector_curves.py      # Tool 10: extract_vector_curve_points
+│                ├─ calibration.py        # Tool 11: calibrate_and_convert_coordinates
+│                ├─ visual_verifier.py    # Tool 12: render_verification_overlay
+│                └─ instruction_tools.py  # Tool 13: get_workflow_instructions
 └─ tests/                      # 単体テストスイート (pytest)
       ├─ conftest.py           # 合成データ・テストフィクスチャ
       ├─ test_pdf_tools.py
@@ -1067,6 +1229,7 @@ digitize_agent/
       ├─ test_vector_curves.py
       ├─ test_calibration.py
       ├─ test_visual_verifier.py
+      ├─ test_instruction_tools.py
       ├─ test_registry_and_schema.py
       └─ test_server.py
 ```
@@ -1082,7 +1245,7 @@ digitize_agent/
 
 ## 5. MCP (Model Context Protocol) サーバー仕様
 
-本ツール群はローカルの MCP サーバーとして起動し、Claude Desktop や各種 AI コーディングエージェント（Antigravity 等）から stdio 経由で呼び出すことが可能です。全 11 種類のツール関数が標準公開されます。
+本ツール群はローカルの MCP サーバーとして起動し、Claude Desktop や各種 AI コーディングエージェント（Antigravity 等）から stdio 経由で呼び出すことが可能です。全 13 種類のツール関数が標準公開されます。
 
 ### サーバー起動方法
 

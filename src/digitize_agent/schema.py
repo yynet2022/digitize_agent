@@ -1,6 +1,6 @@
 """OpenAI Function Calling 互換のツールスキーマ定義モジュール。
 
-デジタイズエージェントで利用可能な全 12 ツールの JSON Schema 定義を提供します。
+デジタイズエージェントで利用可能な全 13 ツールの JSON Schema 定義を提供します。
 """
 
 import json
