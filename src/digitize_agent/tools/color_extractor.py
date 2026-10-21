@@ -6,7 +6,7 @@ HSV 色空間の閾値処理や代表色プリセットにより、連続線プ�
 """
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import cv2
 import numpy as np
@@ -224,19 +224,129 @@ def _classify_hsv_color_name(h: float, s: float, v: float) -> str:
 
 
 def extract_plot_pixels_by_color(
-    image_path: str,
-    color_preset: ColorPresetType | None = None,
-    target_rgb: list[int] | None = None,
-    target_hex: str | None = None,
-    color_tolerance: float = 0.15,
-    hsv_lower: list[int] | None = None,
-    hsv_upper: list[int] | None = None,
-    bbox: list[int] | None = None,
-    exclude_bboxes: list[list[int]] | None = None,
-    extract_mode: str = "continuous_line",
-    x_range: list[int] | None = None,
-    smooth_filter: bool = False,
-    max_jump: float = 15.0,
+    image_path: Annotated[
+        str,
+        Field(description="Path to the cropped plot image file."),
+    ],
+    color_preset: Annotated[
+        ColorPresetType | None,
+        Field(
+            description=(
+                "Preset color name ('blue', 'red', 'green', 'orange', "
+                "'purple', 'cyan', 'magenta', 'yellow', 'brown', 'pink', "
+                "'gray', 'black')."
+            )
+        ),
+    ] = None,
+    target_rgb: Annotated[
+        list[int] | None,
+        Field(
+            min_length=3,
+            max_length=3,
+            description="Target RGB color [R, G, B] (0-255 each).",
+        ),
+    ] = None,
+    target_hex: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Target color in hex format (e.g., '#0072BD', '#D95319')."
+            )
+        ),
+    ] = None,
+    color_tolerance: Annotated[
+        float,
+        Field(
+            ge=0.001,
+            le=255.0,
+            description=(
+                "Color matching tolerance (0.01-1.0 normalized or 1.0-255.0 "
+                "Euclidean distance, default: 0.15)."
+            ),
+        ),
+    ] = 0.15,
+    hsv_lower: Annotated[
+        list[int] | None,
+        Field(
+            min_length=3,
+            max_length=3,
+            description=(
+                "Explicit HSV lower bound [H (0-179), S (0-255), V (0-255)]. "
+                "Recommended when using suggested_hsv_lower from "
+                "legend/colors."
+            ),
+        ),
+    ] = None,
+    hsv_upper: Annotated[
+        list[int] | None,
+        Field(
+            min_length=3,
+            max_length=3,
+            description=(
+                "Explicit HSV upper bound [H (0-179), S (0-255), V (0-255)]. "
+                "Recommended when using suggested_hsv_upper from "
+                "legend/colors."
+            ),
+        ),
+    ] = None,
+    bbox: Annotated[
+        list[int] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description="Optional bounding box [x_min, y_min, x_max, y_max].",
+        ),
+    ] = None,
+    exclude_bboxes: Annotated[
+        list[list[int]] | None,
+        Field(
+            description=(
+                "Optional list of bounding boxes to mask out (e.g. legend "
+                "boxes from detect_legend_region)."
+            )
+        ),
+    ] = None,
+    extract_mode: Annotated[
+        Literal["continuous_line", "scatter_centroids"],
+        Field(
+            description=(
+                "Extraction mode: 'continuous_line' for lines/curves (takes "
+                "column-wise medians), or 'scatter_centroids' for scatter "
+                "dots."
+            )
+        ),
+    ] = "continuous_line",
+    x_range: Annotated[
+        list[int] | None,
+        Field(
+            min_length=2,
+            max_length=2,
+            description=(
+                "Optional [x_min, x_max] pixel column range to restrict "
+                "extraction. Crucial for segmenting specific peak intervals."
+            ),
+        ),
+    ] = None,
+    smooth_filter: Annotated[
+        bool,
+        Field(
+            description=(
+                "Enable moving local median outlier filter for lines. "
+                "Strongly recommended for noisy curves or overlapping lines."
+            )
+        ),
+    ] = False,
+    max_jump: Annotated[
+        float,
+        Field(
+            ge=1.0,
+            le=200.0,
+            description=(
+                "Maximum allowed pixel jump from local median when "
+                "smooth_filter is True (default: 15.0 px)."
+            ),
+        ),
+    ] = 15.0,
 ) -> dict[str, Any]:
     """色条件（HSV閾値、RGB/Hex、プリセット）に基づきプロット曲線を抽出する。
 
@@ -450,9 +560,31 @@ def extract_plot_pixels_by_color(
 
 
 def detect_plot_colors(
-    image_path: str,
-    max_colors: int = 5,
-    min_pixel_ratio: float = 0.002,
+    image_path: Annotated[
+        str,
+        Field(description="Path to the cropped plot image file."),
+    ],
+    max_colors: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=10,
+            description=(
+                "Maximum number of dominant plot colors to detect (1-10)."
+            ),
+        ),
+    ] = 5,
+    min_pixel_ratio: Annotated[
+        float,
+        Field(
+            ge=0.0001,
+            le=0.5,
+            description=(
+                "Minimum pixel population ratio to consider as plot line "
+                "(default: 0.002 = 0.2%)."
+            ),
+        ),
+    ] = 0.002,
 ) -> dict[str, Any]:
     """画像内の主要プロット色を自動検出し、色抽出用パラメータ候補を返す。
 

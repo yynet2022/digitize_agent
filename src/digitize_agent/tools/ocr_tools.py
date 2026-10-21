@@ -6,7 +6,7 @@
 
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import pymupdf as fitz
 import pytesseract
@@ -113,12 +113,54 @@ def _extract_text_from_pdf_region(
 
 
 def ocr_region_text(
-    image_path: str | None = None,
-    pdf_path: str | None = None,
-    page_number: int = 0,
-    bbox: list[float] | None = None,
-    psm: int = 6,
-    whitelist: str | None = None,
+    image_path: Annotated[
+        str | None,
+        Field(description="Path to the cropped image snippet file for OCR."),
+    ] = None,
+    pdf_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional PDF file path. If provided, directly extracts "
+                "native vector text with zero recognition error."
+            )
+        ),
+    ] = None,
+    page_number: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="0-indexed target page number (default: 0).",
+        ),
+    ] = 0,
+    bbox: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description="Bounding box [x0, y0, x1, y1] in PDF points.",
+        ),
+    ] = None,
+    psm: Annotated[
+        int,
+        Field(
+            ge=0,
+            le=13,
+            description=(
+                "Tesseract Page Segmentation Mode: 6 for uniform block, "
+                "7 for single text line, 11 for sparse text."
+            ),
+        ),
+    ] = 6,
+    whitelist: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional character whitelist (e.g. '0123456789.-' for "
+                "numbers)."
+            )
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """画像スニペットまたは PDF 領域からテキストを認識・抽出する。
 

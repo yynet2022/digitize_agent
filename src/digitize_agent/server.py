@@ -8,6 +8,7 @@
 import sys
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from digitize_agent.tools import (
     auto_calibrate_axes,
@@ -25,6 +26,22 @@ from digitize_agent.tools import (
     search_pdf_primitives,
 )
 
+# 読み取り専用ツール向け共通アノテーション設定
+READ_ONLY_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+
+# ファイル書き出しを伴うツール向け共通アノテーション設定
+FILE_WRITE_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+
 
 def create_server() -> MCPServer:
     """Digitize Agent の全ツールを登録した MCP サーバーを構築する。
@@ -35,19 +52,71 @@ def create_server() -> MCPServer:
     server = MCPServer("digitize-agent")
 
     # デジタイズツール群の登録 (全13ツール)
-    server.add_tool(inspect_pdf_primitives)
-    server.add_tool(search_pdf_primitives)
-    server.add_tool(crop_and_transform_region)
-    server.add_tool(detect_axes_and_ticks)
-    server.add_tool(detect_legend_region)
-    server.add_tool(auto_calibrate_axes)
-    server.add_tool(ocr_region_text)
-    server.add_tool(detect_plot_colors)
-    server.add_tool(extract_plot_pixels_by_color)
-    server.add_tool(extract_vector_curve_points)
-    server.add_tool(calibrate_and_convert_coordinates)
-    server.add_tool(render_verification_overlay)
-    server.add_tool(get_workflow_instructions)
+    server.add_tool(
+        inspect_pdf_primitives,
+        title="Inspect PDF Primitives",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        search_pdf_primitives,
+        title="Search PDF Primitives",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        crop_and_transform_region,
+        title="Crop and Transform Region",
+        annotations=FILE_WRITE_ANNOTATIONS,
+    )
+    server.add_tool(
+        detect_axes_and_ticks,
+        title="Detect Axes and Ticks",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        detect_legend_region,
+        title="Detect Legend Region",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        auto_calibrate_axes,
+        title="Auto Calibrate Axes",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        ocr_region_text,
+        title="OCR Region Text",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        detect_plot_colors,
+        title="Detect Plot Colors",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        extract_plot_pixels_by_color,
+        title="Extract Plot Pixels by Color",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        extract_vector_curve_points,
+        title="Extract Vector Curve Points",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
+    server.add_tool(
+        calibrate_and_convert_coordinates,
+        title="Calibrate and Convert Coordinates",
+        annotations=FILE_WRITE_ANNOTATIONS,
+    )
+    server.add_tool(
+        render_verification_overlay,
+        title="Render Verification Overlay",
+        annotations=FILE_WRITE_ANNOTATIONS,
+    )
+    server.add_tool(
+        get_workflow_instructions,
+        title="Get Workflow Instructions",
+        annotations=READ_ONLY_ANNOTATIONS,
+    )
 
     return server
 

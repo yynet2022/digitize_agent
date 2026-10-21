@@ -7,7 +7,7 @@
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import cv2
 import numpy as np
@@ -143,12 +143,47 @@ def _calculate_alignment_metric(
 
 
 def render_verification_overlay(
-    original_image_path: str,
-    csv_path: str,
-    x_calibration: dict[str, Any],
-    y_calibration: dict[str, Any],
-    output_overlay_path: str,
-    curve_column: str | None = "curve",
+    original_image_path: Annotated[
+        str,
+        Field(description="Path to the cropped original plot image."),
+    ],
+    csv_path: Annotated[
+        str,
+        Field(description="Path to the digitized CSV file to verify."),
+    ],
+    x_calibration: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "X axis calibration parameters (from auto_calibrate_axes)."
+            )
+        ),
+    ],
+    y_calibration: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Y axis calibration parameters (from auto_calibrate_axes)."
+            )
+        ),
+    ],
+    output_overlay_path: Annotated[
+        str,
+        Field(
+            description=(
+                "Target output overlay image file path (PNG recommended)."
+            )
+        ),
+    ],
+    curve_column: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional column name for curve grouping in long format CSV "
+                "(default: 'curve')."
+            )
+        ),
+    ] = "curve",
 ) -> dict[str, Any]:
     """元画像とデジタイズデータを半透明重ね合わせして検証画像を生成する。
 

@@ -5,7 +5,7 @@
 """
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import cv2
 import numpy as np
@@ -228,16 +228,75 @@ def _estimate_figure_bbox_above_caption(
 
 
 def crop_and_transform_region(
-    output_path: str,
-    bbox: list[float] | None = None,
-    caption_bbox: list[float] | None = None,
-    image_path: str | None = None,
-    pdf_path: str | None = None,
-    page_number: int = 0,
-    dpi: float = 300.0,
-    bbox_mode: Literal["pixel", "point"] = "pixel",
-    deskew: bool = False,
-    enhance_contrast: bool = False,
+    output_path: Annotated[
+        str,
+        Field(description="Target output image file path (PNG recommended)."),
+    ],
+    bbox: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description="Explicit bounding box [x_min, y_min, x_max, y_max].",
+        ),
+    ] = None,
+    caption_bbox: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional caption bbox [x0, y0, x1, y1] in PDF points (from "
+                "search_pdf_primitives) to estimate plot area above it."
+            ),
+        ),
+    ] = None,
+    image_path: Annotated[
+        str | None,
+        Field(description="Path to the source raster image file."),
+    ] = None,
+    pdf_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Path to the source PDF file (rendered at custom DPI "
+                "directly)."
+            )
+        ),
+    ] = None,
+    page_number: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="0-indexed PDF page number (default: 0).",
+        ),
+    ] = 0,
+    dpi: Annotated[
+        float,
+        Field(
+            gt=0,
+            description=(
+                "Rendering resolution (DPI) when extracting from PDF "
+                "(default: 300.0)."
+            ),
+        ),
+    ] = 300.0,
+    bbox_mode: Annotated[
+        Literal["pixel", "point"],
+        Field(
+            description=(
+                "Coordinate unit of bbox: 'pixel' or 'point' (72 DPI pt)."
+            )
+        ),
+    ] = "pixel",
+    deskew: Annotated[
+        bool,
+        Field(description="Whether to apply Hough transform-based deskewing."),
+    ] = False,
+    enhance_contrast: Annotated[
+        bool,
+        Field(description="Whether to apply CLAHE contrast enhancement."),
+    ] = False,
 ) -> dict[str, Any]:
     """画像または PDF から指定領域をクロップし、前処理を施して保存する。
 

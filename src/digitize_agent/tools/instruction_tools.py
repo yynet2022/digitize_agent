@@ -8,7 +8,7 @@
 
 import importlib.resources
 import pathlib
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -129,7 +129,22 @@ def _extract_section(content: str, topic: TopicType) -> str:
 
 
 def get_workflow_instructions(
-    topic: TopicType = "all",
+    topic: Annotated[
+        TopicType,
+        Field(
+            description=(
+                "Workflow instruction topic to retrieve: "
+                "'all' (full document), "
+                "'vector' (Pattern A: digital PDF vector curves), "
+                "'raster_numeric' (Pattern B: raster plot with numeric "
+                "ticks), "
+                "'raster_qualitative' (Pattern C: qualitative / normalized / "
+                "a.u.), "
+                "'troubleshooting' (troubleshooting guide), or "
+                "'best_practices' (parameter best practices)."
+            )
+        ),
+    ] = "all",
 ) -> dict[str, Any]:
     """digitize-agent の推奨ワークフローとベストプラクティス指示書を取得する.
 

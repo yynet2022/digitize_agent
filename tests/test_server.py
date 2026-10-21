@@ -25,6 +25,12 @@ EXPECTED_MCP_TOOLS = [
     "search_pdf_primitives",
 ]
 
+FILE_WRITE_TOOLS = {
+    "crop_and_transform_region",
+    "calibrate_and_convert_coordinates",
+    "render_verification_overlay",
+}
+
 
 def test_server_list_tools() -> None:
     """MCP サーバーに仕様の全 13 ツールが登録されていることを検証する。"""
@@ -36,6 +42,34 @@ def test_server_list_tools() -> None:
         for expected in EXPECTED_MCP_TOOLS:
             assert expected in tool_names
         assert len(tool_names) == 13
+
+    asyncio.run(_test())
+
+
+def test_server_tool_annotations_and_parameter_schemas() -> None:
+    """全ツールの ToolAnnotations と引数スキーマ description を検証する。"""
+
+    async def _test() -> None:
+        server = create_server()
+        tools = await server.list_tools()
+        for tool in tools:
+            assert tool.title is not None
+            assert tool.annotations is not None
+            if tool.name in FILE_WRITE_TOOLS:
+                assert tool.annotations.read_only_hint is False
+            else:
+                assert tool.annotations.read_only_hint is True
+            assert tool.annotations.destructive_hint is False
+            assert tool.annotations.idempotent_hint is True
+            assert tool.annotations.open_world_hint is False
+
+            # 全パラメータの JSON Schema に description が付与されているか確認
+            props = tool.input_schema.get("properties", {})
+            assert len(props) > 0
+            for prop_name, prop_schema in props.items():
+                assert "description" in prop_schema, (
+                    f"Missing description in {tool.name}.{prop_name}"
+                )
 
     asyncio.run(_test())
 

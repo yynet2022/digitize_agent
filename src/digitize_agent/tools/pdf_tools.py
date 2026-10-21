@@ -5,7 +5,7 @@
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import pdfplumber
 import pymupdf as fitz
@@ -51,9 +51,28 @@ def _is_bbox_inside(
 
 
 def inspect_pdf_primitives(
-    pdf_path: str,
-    page_number: int = 0,
-    bbox_filter: list[float] | None = None,
+    pdf_path: Annotated[
+        str,
+        Field(description="Path to the PDF file to inspect."),
+    ],
+    page_number: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="0-indexed target page number (default: 0).",
+        ),
+    ] = 0,
+    bbox_filter: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional bounding box [x0, y0, x1, y1] in points to filter "
+                "elements within a specific region."
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """PDF から直接テキスト要素とベクター罫線を抽出する。
 
@@ -194,10 +213,26 @@ class SearchPdfPrimitivesInput(BaseModel):
 
 
 def search_pdf_primitives(
-    pdf_path: str,
-    query: str,
-    case_sensitive: bool = False,
-    max_matches: int = 50,
+    pdf_path: Annotated[
+        str,
+        Field(description="Path to the PDF file."),
+    ],
+    query: Annotated[
+        str,
+        Field(description="Search text query (e.g. 'Figure 5', 'Fig.')."),
+    ],
+    case_sensitive: Annotated[
+        bool,
+        Field(description="Whether search is case-sensitive."),
+    ] = False,
+    max_matches: Annotated[
+        int,
+        Field(
+            ge=1,
+            le=500,
+            description="Maximum number of matches to return.",
+        ),
+    ] = 50,
 ) -> dict[str, Any]:
     """PDF 全ページから指定キーワードを検索し、出現ページと領域を返す。
 

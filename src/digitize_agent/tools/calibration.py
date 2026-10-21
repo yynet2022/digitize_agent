@@ -7,7 +7,7 @@
 
 import math
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -168,17 +168,106 @@ def _transform_point_list(
 
 
 def calibrate_and_convert_coordinates(
-    x_calibration: dict[str, Any],
-    y_calibration: dict[str, Any],
-    output_csv_path: str,
-    pixel_points: list[list[float]] | None = None,
-    curves: list[dict[str, Any]] | None = None,
-    column_names: list[str] = ["x", "y"],
-    curve_label: str | None = None,
-    resample_x_grid: list[float] | None = None,
-    num_grid_points: int | None = None,
-    output_format: Literal["long", "wide"] = "long",
-    extrapolate: bool = True,
+    x_calibration: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Calibration definition for X axis (pass x_calibration dict "
+                "from auto_calibrate_axes)."
+            )
+        ),
+    ],
+    y_calibration: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "Calibration definition for Y axis (pass y_calibration dict "
+                "from auto_calibrate_axes)."
+            )
+        ),
+    ],
+    output_csv_path: Annotated[
+        str,
+        Field(description="Target CSV file path to write converted data."),
+    ],
+    pixel_points: Annotated[
+        list[list[float]] | None,
+        Field(
+            description=(
+                "List of pixel points [[x, y], ...] for single curve (from "
+                "extract_plot_pixels_by_color or "
+                "extract_vector_curve_points)."
+            )
+        ),
+    ] = None,
+    curves: Annotated[
+        list[dict[str, Any]] | None,
+        Field(
+            description=(
+                "List of curve dicts each having 'points' list and optional "
+                "'label' (e.g. color_grouped_curves from "
+                "extract_vector_curve_points)."
+            )
+        ),
+    ] = None,
+    column_names: Annotated[
+        list[str],
+        Field(
+            min_length=2,
+            max_length=2,
+            description=(
+                "Physical quantity names for X and Y in CSV (e.g. ['V_DS_V', "
+                "'I_DS_mA'])."
+            ),
+        ),
+    ] = ["x", "y"],
+    curve_label: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional curve label for single curve (default: 'curve_1')."
+            )
+        ),
+    ] = None,
+    resample_x_grid: Annotated[
+        list[float] | None,
+        Field(
+            description=(
+                "Optional explicit common X grid values for resampling."
+            )
+        ),
+    ] = None,
+    num_grid_points: Annotated[
+        int | None,
+        Field(
+            ge=2,
+            le=5000,
+            description=(
+                "Optional number of equidistant X grid points for "
+                "interpolation (recommended for wide format, e.g. 100 or "
+                "200)."
+            ),
+        ),
+    ] = None,
+    output_format: Annotated[
+        Literal["long", "wide"],
+        Field(
+            description=(
+                "Output CSV layout: 'long' (columns: [X, Y, curve]) or "
+                "'wide' (columns: [X, curve1, curve2...])."
+            )
+        ),
+    ] = "long",
+    extrapolate: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to extrapolate beyond individual curve domain when "
+                "resampling. Set False to put NaN outside each curve's X "
+                "range."
+            )
+        ),
+    ] = True,
 ) -> dict[str, Any]:
     """ピクセル座標列を実数値にマッピングし CSV ファイルとして出力する。
 

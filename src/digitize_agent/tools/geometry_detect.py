@@ -6,7 +6,7 @@
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import cv2
 import numpy as np
@@ -159,9 +159,35 @@ def _find_axis_line(
 
 
 def detect_axes_and_ticks(
-    image_path: str,
-    min_line_length_ratio: float = 0.3,
-    detect_box_frame: bool = True,
+    image_path: Annotated[
+        str,
+        Field(
+            description=(
+                "Path to the cropped plot image file (e.g. from "
+                "crop_and_transform_region)."
+            )
+        ),
+    ],
+    min_line_length_ratio: Annotated[
+        float,
+        Field(
+            ge=0.05,
+            le=1.0,
+            description=(
+                "Minimum line length ratio relative to image size "
+                "(default: 0.3)."
+            ),
+        ),
+    ] = 0.3,
+    detect_box_frame: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to detect rectangular box frame enclosing plot area. "
+                "Essential for qualitative/normalized plots (default: True)."
+            )
+        ),
+    ] = True,
 ) -> dict[str, Any]:
     """グラフ画像から座標軸線、目盛り線、および外枠矩形を検出する。
 
@@ -331,8 +357,26 @@ class DetectLegendRegionInput(BaseModel):
 
 
 def detect_legend_region(
-    image_path: str,
-    plot_bbox: list[int] | None = None,
+    image_path: Annotated[
+        str,
+        Field(
+            description=(
+                "Path to the plot image file (e.g. cropped plot image)."
+            )
+        ),
+    ],
+    plot_bbox: Annotated[
+        list[int] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional inner plot bounding box [x_min, y_min, x_max, "
+                "y_max]. If omitted, automatically estimated from axis/box "
+                "frame."
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """プロット画像から凡例（Legend）領域の矩形と項目代表色を検出する。
 
@@ -662,18 +706,108 @@ class AutoCalibrateAxesInput(BaseModel):
 
 
 def auto_calibrate_axes(
-    image_path: str,
-    pdf_path: str | None = None,
-    page_number: int = 0,
-    crop_bbox_points: list[float] | None = None,
-    dpi: float = 300.0,
-    x_tick_candidates: list[int] | None = None,
-    y_tick_candidates: list[int] | None = None,
-    mode: Literal["tick_matched", "normalized"] = "tick_matched",
-    normalized_domain_x: list[float] = [0.0, 1.0],
-    normalized_domain_y: list[float] = [0.0, 1.0],
-    box_frame_bbox: list[int] | None = None,
-    fallback_to_normalized: bool = True,
+    image_path: Annotated[
+        str,
+        Field(description="Path to the cropped plot image file."),
+    ],
+    pdf_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional original PDF path for high-accuracy embedded text "
+                "matching. Highly recommended for digital PDFs."
+            )
+        ),
+    ] = None,
+    page_number: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="0-indexed PDF page number containing the plot.",
+        ),
+    ] = 0,
+    crop_bbox_points: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional crop bbox [x0, y0, x1, y1] in PDF points (from "
+                "crop_and_transform_region estimated_bbox)."
+            ),
+        ),
+    ] = None,
+    dpi: Annotated[
+        float,
+        Field(
+            gt=0,
+            description=(
+                "DPI used when the image was rendered (default: 300.0)."
+            ),
+        ),
+    ] = 300.0,
+    x_tick_candidates: Annotated[
+        list[int] | None,
+        Field(description="Optional pre-detected X tick pixel positions."),
+    ] = None,
+    y_tick_candidates: Annotated[
+        list[int] | None,
+        Field(description="Optional pre-detected Y tick pixel positions."),
+    ] = None,
+    mode: Annotated[
+        Literal["tick_matched", "normalized"],
+        Field(
+            description=(
+                "Calibration mode: 'tick_matched' for standard plots with "
+                "numeric tick labels, or 'normalized' for qualitative / "
+                "arbitrary-unit (a.u.) plots without numeric ticks."
+            )
+        ),
+    ] = "tick_matched",
+    normalized_domain_x: Annotated[
+        list[float],
+        Field(
+            min_length=2,
+            max_length=2,
+            description=(
+                "Target domain [min, max] for X axis when mode='normalized' "
+                "(default: [0.0, 1.0])."
+            ),
+        ),
+    ] = [0.0, 1.0],
+    normalized_domain_y: Annotated[
+        list[float],
+        Field(
+            min_length=2,
+            max_length=2,
+            description=(
+                "Target domain [min, max] for Y axis when mode='normalized' "
+                "(default: [0.0, 1.0])."
+            ),
+        ),
+    ] = [0.0, 1.0],
+    box_frame_bbox: Annotated[
+        list[int] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional plot inner frame [x0, y0, x1, y1] pixels for "
+                "normalized mode. If omitted, automatically detected via box "
+                "frame contour."
+            ),
+        ),
+    ] = None,
+    fallback_to_normalized: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to automatically fall back to normalized mode if "
+                "tick label matching fails to find sufficient reference "
+                "points (default: True)."
+            )
+        ),
+    ] = True,
 ) -> dict[str, Any]:
     """目盛り線と数値ラベルを自動照合し座標キャリブレーション設定を推定する。
 

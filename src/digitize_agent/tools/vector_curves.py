@@ -7,7 +7,7 @@ DPI やクロップ領域を指定することで、ピクセル座標への自�
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import pymupdf as fitz
 from pydantic import BaseModel, Field
@@ -423,23 +423,148 @@ def _extract_curves_from_drawing(
 
 
 def extract_vector_curve_points(
-    pdf_path: str,
-    page_number: int = 0,
-    bbox_filter: list[float] | None = None,
-    drawing_index: int | None = None,
-    curve_types: list[str] = ["c"],
-    drawing_indices: list[int] | None = None,
-    item_indices: list[int] | None = None,
-    curve_segments: list[list[int]] | None = None,
-    num_samples_per_segment: int = 50,
-    sort_x_ascending: bool = True,
-    dpi: float | None = None,
-    crop_bbox_pixels: list[float] | None = None,
-    min_length: float = 0.0,
-    stroke_color: list[float] | None = None,
-    color_tolerance: float = 0.15,
-    extract_all_matching: bool = False,
-    group_by_color: bool = False,
+    pdf_path: Annotated[
+        str,
+        Field(description="Path to the PDF file."),
+    ],
+    page_number: Annotated[
+        int,
+        Field(ge=0, description="0-indexed target page number."),
+    ] = 0,
+    bbox_filter: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional [x0, y0, x1, y1] bounding box in PDF points to "
+                "filter drawings within target plot area."
+            ),
+        ),
+    ] = None,
+    drawing_index: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description=(
+                "Optional index of a single specific drawing to extract."
+            ),
+        ),
+    ] = None,
+    curve_types: Annotated[
+        list[str],
+        Field(
+            description=(
+                "Element types to extract: 'c' for Bézier curves (default), "
+                "'l' for line segments."
+            )
+        ),
+    ] = ["c"],
+    drawing_indices: Annotated[
+        list[int] | None,
+        Field(
+            description=(
+                "Optional list of drawing indices to extract together (e.g. "
+                "[31, 32, 33])."
+            )
+        ),
+    ] = None,
+    item_indices: Annotated[
+        list[int] | None,
+        Field(description="Optional list of item indices within the drawing."),
+    ] = None,
+    curve_segments: Annotated[
+        list[list[int]] | None,
+        Field(
+            description=(
+                "Optional explicit grouping of item indices into distinct "
+                "curves."
+            )
+        ),
+    ] = None,
+    num_samples_per_segment: Annotated[
+        int,
+        Field(
+            ge=2,
+            le=500,
+            description=(
+                "Number of sampled points per Bézier curve segment "
+                "(default: 50)."
+            ),
+        ),
+    ] = 50,
+    sort_x_ascending: Annotated[
+        bool,
+        Field(
+            description="If True, orient points so X increases monotonically."
+        ),
+    ] = True,
+    dpi: Annotated[
+        float | None,
+        Field(
+            gt=0,
+            description=(
+                "Rendering resolution (DPI) to convert PDF points to pixel "
+                "coordinates (match the crop DPI, e.g. 300.0)."
+            ),
+        ),
+    ] = None,
+    crop_bbox_pixels: Annotated[
+        list[float] | None,
+        Field(
+            min_length=4,
+            max_length=4,
+            description=(
+                "Optional [x0, y0, x1, y1] in pixel coordinates of a cropped "
+                "region. If provided with dpi, returned coordinates will be "
+                "relative to this crop origin."
+            ),
+        ),
+    ] = None,
+    min_length: Annotated[
+        float,
+        Field(
+            ge=0.0,
+            description=(
+                "Minimum path length in points to filter out short tick marks "
+                "or noise dots (e.g. 5.0)."
+            ),
+        ),
+    ] = 0.0,
+    stroke_color: Annotated[
+        list[float] | None,
+        Field(
+            min_length=3,
+            max_length=4,
+            description="Target stroke color [R, G, B] (0.0-1.0 or 0-255).",
+        ),
+    ] = None,
+    color_tolerance: Annotated[
+        float,
+        Field(
+            ge=0.01,
+            le=0.5,
+            description="Tolerance factor when matching stroke_color.",
+        ),
+    ] = 0.15,
+    extract_all_matching: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, return extracted curves from all matching drawings."
+            )
+        ),
+    ] = False,
+    group_by_color: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, groups matching drawings by identical stroke color "
+                "and merges curve segments into continuous curves. Highly "
+                "recommended."
+            )
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """PDF のベクター描画パスから曲線の座標列を直接サンプリング抽出する。
 
