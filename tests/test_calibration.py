@@ -295,3 +295,88 @@ def test_calibrate_extrapolate_false(temp_dir: Path) -> None:
     assert not pd.isna(df["c1"].iloc[2])
     assert not pd.isna(df["c1"].iloc[3])
     assert pd.isna(df["c1"].iloc[4])
+
+
+def test_calibrate_long_format_resampling_and_edge_cases(
+    temp_dir: Path,
+) -> None:
+    """Long 形式でのリサンプリングおよび異常系エッジケースを検証する。"""
+    out_csv = str(temp_dir / "long_resampled.csv")
+    x_calib = {"pixel_refs": [0.0, 100.0], "val_refs": [0.0, 10.0]}
+    y_calib = {"pixel_refs": [100.0, 0.0], "val_refs": [0.0, 50.0]}
+
+    # 1. output_format='long' かつ num_grid_points 指定（単一曲線ラベルなし）
+    res_long = calibrate_and_convert_coordinates(
+        pixel_points=[[0.0, 100.0], [100.0, 0.0]],
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+        output_format="long",
+        num_grid_points=5,
+    )
+    assert res_long["status"] == "success"
+    assert res_long["row_count"] == 5
+
+    # 2. output_format='long' で curves（ラベル付き）のリサンプリング
+    out_csv2 = str(temp_dir / "long_curves_resampled.csv")
+    res_long_curves = calibrate_and_convert_coordinates(
+        curves=[
+            {"points": []},  # 空 points はスキップされること
+            {"points": [[0.0, 100.0], [100.0, 0.0]]},  # ラベル省略で curve_1
+        ],
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv2,
+        output_format="long",
+        num_grid_points=4,
+    )
+    assert res_long_curves["status"] == "success"
+    assert res_long_curves["row_count"] == 4
+
+    # 3. wide 形式で単一曲線（curve 列なし）のリサンプリング
+    out_csv_wide_single = str(temp_dir / "wide_single.csv")
+    res_wide_single = calibrate_and_convert_coordinates(
+        pixel_points=[[0.0, 100.0], [100.0, 0.0]],
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv_wide_single,
+        output_format="wide",
+        num_grid_points=3,
+    )
+    assert res_wide_single["status"] == "success"
+
+    # 4. 2要素未満の不正な座標のみの場合は有効点なしでエラー
+    res_no_valid = calibrate_and_convert_coordinates(
+        pixel_points=[[1.0]],
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+    )
+    assert res_no_valid["status"] == "error"
+    assert "No valid points" in res_no_valid["message"]
+
+    # 5. 対数スケールで基準値が 0 以下の場合エラー
+    bad_log_calib = {
+        "pixel_refs": [0.0, 100.0],
+        "val_refs": [-1.0, 10.0],
+        "scale_type": "log",
+    }
+    res_bad_log = calibrate_and_convert_coordinates(
+        pixel_points=[[50.0, 50.0]],
+        x_calibration=bad_log_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+    )
+    assert res_bad_log["status"] == "error"
+    assert "strictly positive" in res_bad_log["message"]
+
+    # 6. バリデーションエラー (column_names が 1 要素のみ)
+    res_val = calibrate_and_convert_coordinates(
+        pixel_points=[[50.0, 50.0]],
+        column_names=["only_one"],
+        x_calibration=x_calib,
+        y_calibration=y_calib,
+        output_csv_path=out_csv,
+    )
+    assert res_val["status"] == "error"
+    assert "Validation error" in res_val["message"]

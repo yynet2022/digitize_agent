@@ -6,8 +6,11 @@ create_server によるツール登録、一覧取得、
 
 import asyncio
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from digitize_agent.server import create_server
+import pytest
+
+from digitize_agent.server import create_server, main
 
 EXPECTED_MCP_TOOLS = [
     "auto_calibrate_axes",
@@ -116,3 +119,25 @@ def test_server_call_tool_error_handling() -> None:
         assert "error" in res.content[0].text
 
     asyncio.run(_test())
+
+
+def test_server_main_normal_and_keyboard_interrupt() -> None:
+    """main 関数の stdio 起動および KeyboardInterrupt 終了を検証する。"""
+    mock_server = MagicMock()
+    with patch(
+        "digitize_agent.server.create_server", return_value=mock_server
+    ):
+        main()
+        mock_server.run.assert_called_once_with(transport="stdio")
+
+    mock_server_interrupt = MagicMock()
+    mock_server_interrupt.run.side_effect = KeyboardInterrupt()
+    with (
+        patch(
+            "digitize_agent.server.create_server",
+            return_value=mock_server_interrupt,
+        ),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        main()
+    assert exc_info.value.code == 0

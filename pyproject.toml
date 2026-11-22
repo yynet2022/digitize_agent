@@ -40,7 +40,7 @@ digitize_agent = ["data/*.md"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q"
+addopts = "-ra -q --color=no --cov=src --cov-branch --cov-report=term-missing"
 pythonpath = ["src"]
 testpaths = ["tests"]
 

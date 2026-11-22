@@ -5,11 +5,14 @@ extract_plot_pixels_by_color の連続線抽出、散布図重心抽出、
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 from digitize_agent.tools.color_extractor import (
+    _classify_hsv_color_name,
+    _parse_hex_color,
     detect_plot_colors,
     extract_plot_pixels_by_color,
 )
@@ -244,3 +247,93 @@ def test_extract_x_range_and_smooth_filter(temp_dir: Path) -> None:
     # 外れ値 (x=40, y=10) は除去されていること
     x40_pts = [p for p in pts if p[0] == 40]
     assert len(x40_pts) == 0 or abs(x40_pts[0][1] - 50) <= 5
+
+
+def test_color_helpers_and_classification() -> None:
+    """_parse_hex_color と _classify_hsv_color_name の全分岐を検証する。"""
+    assert _parse_hex_color("#F00") == (255, 0, 0)
+    assert _classify_hsv_color_name(0, 0, 10) == "black"
+    assert _classify_hsv_color_name(0, 10, 220) == "white"
+    assert _classify_hsv_color_name(0, 10, 100) == "gray"
+    assert _classify_hsv_color_name(5, 100, 100) == "red"
+    assert _classify_hsv_color_name(175, 100, 100) == "red"
+    assert _classify_hsv_color_name(15, 100, 100) == "orange"
+    assert _classify_hsv_color_name(30, 100, 100) == "yellow"
+    assert _classify_hsv_color_name(60, 100, 100) == "green"
+    assert _classify_hsv_color_name(110, 100, 100) == "blue"
+    assert _classify_hsv_color_name(150, 100, 100) == "purple"
+    assert _classify_hsv_color_name(-5, 100, 100) == "red"
+    assert _classify_hsv_color_name(float("nan"), 100, 100) == "unknown"
+
+
+def test_extract_plot_pixels_error_branches(
+    sample_plot_image: str, temp_dir: Path
+) -> None:
+    """extract_plot_pixels_by_color の異常系・エッジケース分岐を検証する。"""
+    # 不正な Hex 指定
+    res_hex = extract_plot_pixels_by_color(
+        image_path=sample_plot_image,
+        target_hex="#12345",
+    )
+    assert res_hex["status"] == "error"
+    assert "Invalid hex color" in res_hex["message"]
+
+    # 色条件が1つも指定されていない場合
+    res_no_col = extract_plot_pixels_by_color(image_path=sample_plot_image)
+    assert res_no_col["status"] == "error"
+    assert "must be provided" in res_no_col["message"]
+
+    # 画像デコード失敗
+    bad_img = temp_dir / "corrupt.png"
+    bad_img.write_bytes(b"not an image")
+    res_decode = extract_plot_pixels_by_color(
+        image_path=str(bad_img),
+        color_preset="blue",
+    )
+    assert res_decode["status"] == "error"
+    assert "Failed to load image" in res_decode["message"]
+
+    # 処理中の例外
+    with patch("cv2.cvtColor", side_effect=RuntimeError("cv2 crash")):
+        res_exc = extract_plot_pixels_by_color(
+            image_path=sample_plot_image,
+            color_preset="blue",
+        )
+        assert res_exc["status"] == "error"
+        assert "Pixel extraction failed" in res_exc["message"]
+
+
+def test_detect_plot_colors_edge_and_error_branches(
+    sample_plot_image: str, temp_dir: Path
+) -> None:
+    """detect_plot_colors の白紙画像および異常系分岐を検証する。"""
+    # バリデーションエラー
+    res_val = detect_plot_colors(image_path=sample_plot_image, max_colors=99)
+    assert res_val["status"] == "error"
+    assert "Validation error" in res_val["message"]
+
+    # 存在しないファイル
+    res_missing = detect_plot_colors(image_path=str(temp_dir / "no.png"))
+    assert res_missing["status"] == "error"
+    assert "not found" in res_missing["message"]
+
+    # デコード失敗
+    bad_img = temp_dir / "bad_color.png"
+    bad_img.write_bytes(b"invalid")
+    res_bad = detect_plot_colors(image_path=str(bad_img))
+    assert res_bad["status"] == "error"
+    assert "Failed to load image" in res_bad["message"]
+
+    # 完全な白紙画像（前景ピクセルが0件）
+    blank_img = np.full((50, 50, 3), 255, dtype=np.uint8)
+    blank_path = str(temp_dir / "blank.png")
+    cv2.imwrite(blank_path, blank_img)
+    res_blank = detect_plot_colors(image_path=blank_path)
+    assert res_blank["status"] == "success"
+    assert res_blank["dominant_colors"] == []
+
+    # 処理中の例外
+    with patch("cv2.kmeans", side_effect=RuntimeError("kmeans error")):
+        res_exc = detect_plot_colors(image_path=sample_plot_image)
+        assert res_exc["status"] == "error"
+        assert "Plot color detection failed" in res_exc["message"]

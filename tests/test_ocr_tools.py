@@ -7,7 +7,11 @@ ocr_region_text のテキスト抽出、信頼度集計、モック動作、
 from pathlib import Path
 from unittest.mock import patch
 
-from digitize_agent.tools.ocr_tools import ocr_region_text
+from digitize_agent.tools.ocr_tools import (
+    _ensure_tesseract_configured,
+    _extract_text_from_pdf_region,
+    ocr_region_text,
+)
 
 
 def test_ocr_region_text_mocked_success(
@@ -85,3 +89,85 @@ def test_ocr_pdf_fallback(sample_pdf_with_text_and_lines: str) -> None:
         assert res.get("status") != "error"
         assert "Sample Plot" in res["text"]
         assert res["confidence"] == 100.0
+
+
+def test_ensure_tesseract_configured_branches() -> None:
+    """_ensure_tesseract_configured の PATH 検出・候補探索を検証する。"""
+    with patch("shutil.which", return_value="C:/tesseract.exe"):
+        assert _ensure_tesseract_configured() is True
+
+    with (
+        patch("shutil.which", return_value=None),
+        patch("pathlib.Path.is_file", return_value=True),
+    ):
+        assert _ensure_tesseract_configured() is True
+
+    with (
+        patch("shutil.which", return_value=None),
+        patch("pathlib.Path.is_file", return_value=False),
+    ):
+        assert _ensure_tesseract_configured() is False
+
+
+def test_extract_text_from_pdf_region_branches(
+    sample_pdf_with_text_and_lines: str,
+) -> None:
+    """PDF 領域抽出のページ範囲外・bbox 省略・例外処理を検証する。"""
+    # ページ範囲外
+    res_out = _extract_text_from_pdf_region(
+        pdf_path=sample_pdf_with_text_and_lines,
+        page_number=99,
+    )
+    assert res_out["status"] == "error"
+    assert "out of range" in res_out["message"]
+
+    # bbox=None でページ全体抽出
+    res_full = _extract_text_from_pdf_region(
+        pdf_path=sample_pdf_with_text_and_lines,
+        page_number=0,
+        bbox=None,
+    )
+    assert "Sample Plot" in res_full["text"]
+
+    # 存在しないファイルで例外発生
+    res_err = _extract_text_from_pdf_region(
+        pdf_path="non_existent_pdf.pdf",
+        page_number=0,
+    )
+    assert res_err["status"] == "error"
+    assert "PDF text fallback failed" in res_err["message"]
+
+
+def test_ocr_region_text_additional_branches(
+    sample_plot_image: str,
+    sample_pdf_with_text_and_lines: str,
+) -> None:
+    """ocr_region_text の未指定エラー・フォールバック・例外分岐を検証。"""
+    # image_path も pdf_path も未指定
+    res_none = ocr_region_text()
+    assert res_none["status"] == "error"
+    assert "Either image_path or valid pdf_path" in res_none["message"]
+
+    # image_path と pdf_path 両方指定時に 1回目のチェックは True、2回目で False
+    with patch(
+        "digitize_agent.tools.ocr_tools._ensure_tesseract_configured",
+        side_effect=[True, False],
+    ):
+        res_fb2 = ocr_region_text(
+            image_path=sample_plot_image,
+            pdf_path=sample_pdf_with_text_and_lines,
+            page_number=0,
+        )
+        assert "Sample Plot" in res_fb2["text"]
+
+    # OCR 実行中の予期せぬ例外
+    with (
+        patch(
+            "digitize_agent.tools.ocr_tools._ensure_tesseract_configured",
+            return_value=True,
+        ),
+        patch("PIL.Image.open", side_effect=RuntimeError("corrupt image")),
+    ):
+        res_exc = ocr_region_text(image_path=sample_plot_image)
+        assert res_exc["status"] == "error"
+        assert "OCR processing failed" in res_exc["message"]

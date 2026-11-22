@@ -4,9 +4,15 @@ get_workflow_instructions の各トピック抽出、スキーマ、
 および MCP サーバー・レジストリ連携を検証します。
 """
 
+from unittest.mock import patch
+
+import pytest
+
 from digitize_agent.registry import dispatch_tool_call, get_tool
 from digitize_agent.server import create_server
 from digitize_agent.tools.instruction_tools import (
+    _extract_section,
+    _load_raw_instructions,
     get_workflow_instructions,
 )
 
@@ -86,3 +92,30 @@ def test_server_registration() -> None:
     tool_names = [t.name for t in server._tool_manager.list_tools()]
     assert "get_workflow_instructions" in tool_names
     assert len(tool_names) == 13
+
+
+def test_load_raw_instructions_fallback_and_not_found() -> None:
+    """リソース読み込み失敗時のローカルフォールバックと例外を検証する。"""
+    with patch(
+        "importlib.resources.files",
+        side_effect=RuntimeError("package not installed"),
+    ):
+        text = _load_raw_instructions()
+        assert "Digitize Agent" in text
+
+    with (
+        patch(
+            "importlib.resources.files",
+            side_effect=RuntimeError("package not installed"),
+        ),
+        patch("pathlib.Path.is_file", return_value=False),
+        pytest.raises(FileNotFoundError),
+    ):
+        _load_raw_instructions()
+
+
+def test_extract_section_unknown_topic() -> None:
+    """未知のトピックやマーカー不一致時に全文が返ることを検証する。"""
+    sample = "Sample full content"
+    assert _extract_section(sample, "unknown_topic") == sample  # type: ignore[arg-type]
+    assert _extract_section(sample, "vector") == sample

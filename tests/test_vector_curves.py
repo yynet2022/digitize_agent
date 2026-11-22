@@ -5,12 +5,15 @@ PDF からの座標抽出および DPI・クロップ変換を検証します。
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pymupdf as fitz
 import pytest
 
 from digitize_agent.tools.vector_curves import (
+    _calc_segment_length,
     _chain_segments,
+    _color_matches,
     _eval_cubic_bezier,
     extract_vector_curve_points,
 )
@@ -253,3 +256,145 @@ def test_extract_vector_curve_group_by_color(tmp_path: Path) -> None:
     group = res["color_grouped_curves"][0]
     assert group["points"][0][0] == 10.0
     assert group["points"][-1][0] == 100.0
+
+
+def test_vector_curves_helpers_and_chain_modes() -> None:
+    """ヘルパー関数と _chain_segments の全連結モードを検証する。"""
+    assert _color_matches(None, [1.0, 0.0, 0.0]) is False
+    assert _color_matches([1.0, 0.0], [1.0, 0.0, 0.0]) is False
+    assert _color_matches([255, 0, 0], [1.0, 0.0, 0.0], tolerance=0.1) is True
+
+    assert _calc_segment_length([]) == 0.0
+    assert _calc_segment_length([[0.0, 0.0]]) == 0.0
+    assert abs(_calc_segment_length([[0.0, 0.0], [3.0, 4.0]]) - 5.0) < 1e-6
+
+    # append_reverse: curr=[0->5], cand=[10->5]
+    c_app_rev = _chain_segments(
+        [
+            {"item_index": 0, "points": [[0.0, 0.0], [5.0, 0.0]]},
+            {"item_index": 1, "points": [[10.0, 0.0], [5.0, 0.0]]},
+        ],
+        tolerance=1.0,
+    )
+    assert len(c_app_rev) == 1
+    assert c_app_rev[0]["points"] == [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]]
+
+    # prepend_reverse: curr=[5->10], cand=[5->0]
+    c_pre_rev = _chain_segments(
+        [
+            {"item_index": 0, "points": [[5.0, 0.0], [10.0, 0.0]]},
+            {"item_index": 1, "points": [[5.0, 0.0], [0.0, 0.0]]},
+        ],
+        tolerance=1.0,
+    )
+    assert len(c_pre_rev) == 1
+    assert c_pre_rev[0]["points"] == [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]]
+
+
+def test_extract_vector_curve_points_edge_and_error_branches(
+    tmp_path: Path,
+) -> None:
+    """extract_vector_curve_points のエッジケース・エラー分岐を検証する。"""
+    # 1. バリデーションエラー
+    res_val = extract_vector_curve_points(
+        pdf_path="dummy.pdf", num_samples_per_segment=1
+    )
+    assert res_val["status"] == "error"
+    assert "Validation error" in res_val["message"]
+
+    # 2. ベクター描画が1つもないページ
+    doc_empty = fitz.open()
+    doc_empty.new_page(width=100, height=100)
+    empty_pdf = tmp_path / "no_drawings.pdf"
+    doc_empty.save(str(empty_pdf))
+    doc_empty.close()
+
+    res_no_dwg = extract_vector_curve_points(pdf_path=str(empty_pdf))
+    assert res_no_dwg["status"] == "error"
+    assert "No vector drawings found" in res_no_dwg["message"]
+
+    # 3. 描画はあるが指定インデックスが範囲外、または条件不一致
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    sh = page.new_shape()
+    sh.draw_line(fitz.Point(10, 10), fitz.Point(50, 10))
+    sh.draw_line(fitz.Point(50, 10), fitz.Point(90, 10))
+    sh.finish(color=(0, 0, 1), width=1.0)
+    sh.commit()
+    line_pdf = tmp_path / "line_only.pdf"
+    doc.save(str(line_pdf))
+    doc.close()
+
+    # 無効な drawing_indices
+    res_bad_indices = extract_vector_curve_points(
+        pdf_path=str(line_pdf), drawing_indices=[99, 100]
+    )
+    assert res_bad_indices["status"] == "error"
+    assert (
+        "None of the specified drawing_indices" in res_bad_indices["message"]
+    )
+
+    # 無効な drawing_index
+    res_bad_idx = extract_vector_curve_points(
+        pdf_path=str(line_pdf), drawing_index=99
+    )
+    assert res_bad_idx["status"] == "error"
+    assert "out of range" in res_bad_idx["message"]
+
+    # bbox_filter で範囲外になり一致描画が0件になる場合
+    res_bbox_miss = extract_vector_curve_points(
+        pdf_path=str(line_pdf),
+        curve_types=["l"],
+        bbox_filter=[150.0, 150.0, 190.0, 190.0],
+    )
+    assert res_bbox_miss["status"] == "error"
+    assert (
+        "No drawings containing requested curves" in res_bbox_miss["message"]
+    )
+
+    # drawing_index=0 を明示したが curve_types=['c'] (線分しかないので抽出0件)
+    res_no_items = extract_vector_curve_points(
+        pdf_path=str(line_pdf),
+        drawing_index=0,
+        curve_types=["c"],
+    )
+    assert res_no_items["status"] == "error"
+    assert "No curve or line segments extracted" in res_no_items["message"]
+
+    # curve_segments と item_indices の明示指定
+    res_segs = extract_vector_curve_points(
+        pdf_path=str(line_pdf),
+        drawing_index=0,
+        curve_types=["l"],
+        item_indices=[0, 1],
+        curve_segments=[[0], [1]],
+    )
+    assert res_segs["status"] == "success"
+    assert res_segs["total_curves"] == 2
+
+    # group_by_color で color=None の描画が含まれる場合および例外キャッチ
+    fake_p0 = MagicMock(x=10.0, y=20.0)
+    fake_p1 = MagicMock(x=50.0, y=20.0)
+    fake_page = MagicMock()
+    fake_page.get_drawings.return_value = [
+        {
+            "color": None,
+            "rect": None,
+            "items": [("l", fake_p0, fake_p1), ("re", fake_p0)],
+        }
+    ]
+    fake_doc = MagicMock()
+    fake_doc.__enter__.return_value = [fake_page]
+    with patch("pymupdf.open", return_value=fake_doc):
+        res_none_col = extract_vector_curve_points(
+            pdf_path=str(line_pdf),
+            curve_types=["l", "re"],
+            group_by_color=True,
+        )
+        assert res_none_col["status"] == "success"
+        assert res_none_col["color_grouped_curves"][0]["color_hex"] is None
+
+    with patch("pymupdf.open", side_effect=RuntimeError("fitz failure")):
+        res_exc = extract_vector_curve_points(pdf_path=str(line_pdf))
+        assert res_exc["status"] == "error"
+        assert "Failed to extract vector curve points" in res_exc["message"]

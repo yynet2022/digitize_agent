@@ -4,10 +4,16 @@ schema.py の OpenAI JSON Schema 定義妥当性、
 registry.py のディスパッチ処理およびエラーハンドリングを検証します。
 """
 
+import json
 from pathlib import Path
+from unittest.mock import patch
 
 from digitize_agent.registry import dispatch_tool_call, get_tool, list_tools
-from digitize_agent.schema import ALL_SCHEMAS, SCHEMAS_BY_NAME
+from digitize_agent.schema import (
+    ALL_SCHEMAS,
+    SCHEMAS_BY_NAME,
+    export_schemas_to_directory,
+)
 
 EXPECTED_TOOLS = [
     "auto_calibrate_axes",
@@ -69,3 +75,30 @@ def test_dispatch_unknown_tool() -> None:
     res = dispatch_tool_call("non_existent_tool", {})
     assert res["status"] == "error"
     assert "Unknown tool" in res["message"]
+
+
+def test_dispatch_tool_call_exception() -> None:
+    """ツール実行中に予期せぬ例外が発生した際にエラー辞書が返ることを検証。"""
+    with patch(
+        "digitize_agent.registry.get_tool",
+        return_value=lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("boom")
+        ),
+    ):
+        res = dispatch_tool_call("inspect_pdf_primitives", {})
+        assert res["status"] == "error"
+        assert "Execution error in tool" in res["message"]
+        assert "boom" in res["message"]
+
+
+def test_export_schemas_to_directory(temp_dir: Path) -> None:
+    """全ツールスキーマが指定ディレクトリに JSON 出力されることを検証する。"""
+    out_dir = temp_dir / "schemas_out"
+    exported = export_schemas_to_directory(out_dir)
+
+    assert len(exported) == 13
+    for file_path in exported:
+        assert file_path.is_file()
+        data = json.loads(file_path.read_text(encoding="utf-8"))
+        assert data["name"] == file_path.stem
+        assert "parameters" in data
