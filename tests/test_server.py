@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import digitize_agent.server as server_mod
 from digitize_agent.server import create_server, main
 
 EXPECTED_MCP_TOOLS = [
@@ -144,5 +145,5 @@ def test_server_main_normal_and_keyboard_interrupt() -> None:
     assert exc_info.value.code == 0
 
     with patch("mcp.server.mcpserver.MCPServer.run") as mock_run:
-        runpy.run_module("digitize_agent.server", run_name="__main__")
+        runpy.run_path(server_mod.__file__, run_name="__main__")
         mock_run.assert_called_once_with(transport="stdio")
