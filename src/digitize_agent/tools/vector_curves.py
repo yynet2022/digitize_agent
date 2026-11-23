@@ -323,6 +323,8 @@ def _chain_segments(
                 elif best_mode == "prepend_reverse":
                     curr_points = list(reversed(cand_pts))[:-1] + curr_points
                     curr_items.insert(0, cand_item)
+                else:  # pragma: no cover
+                    raise ValueError(f"Unexpected chain mode: {best_mode}")
                 extended = True
 
         if sort_x_ascending and len(curr_points) > 1:

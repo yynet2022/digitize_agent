@@ -199,6 +199,11 @@ def test_detect_and_correct_skew_edge_branches() -> None:
     _, ang_horiz = _detect_and_correct_skew(horiz)
     assert abs(ang_horiz) < 0.5
 
+    # HoughLinesP が4要素未満の配列を返した場合のスキップ分岐
+    with patch("cv2.HoughLinesP", return_value=[np.array([1, 2])]):
+        _, ang_short = _detect_and_correct_skew(horiz)
+        assert ang_short == 0.0
+
 
 def test_load_image_from_pdf_and_estimate_bbox_branches(
     sample_scanned_pdf: str,
@@ -235,6 +240,7 @@ def test_load_image_from_pdf_and_estimate_bbox_branches(
     fake_page2.get_drawings.return_value = [
         {"rect": None},
         {"rect": fitz.Rect(0, 100, 295, 200)},  # width > 95% でスキップ
+        {"rect": fitz.Rect(10, 300, 100, 350)},  # r.y1 > c_y0 + 5.0 でスキップ
     ]
     est = _estimate_figure_bbox_above_caption(
         fake_page2, [50.0, 250.0, 200.0, 270.0]
@@ -298,3 +304,28 @@ def test_crop_and_transform_error_branches(
     )
     assert res_oob["status"] == "error"
     assert "Failed to process and save cropped image" in res_oob["message"]
+
+    # 6. caption_bbox 推定時のページ範囲外分岐と空画像分岐
+    dummy_img = np.zeros((10, 10, 3), dtype=np.uint8)
+    with patch(
+        "digitize_agent.tools.image_transforms._load_image_from_pdf",
+        return_value=dummy_img,
+    ):
+        res_cap_oob = crop_and_transform_region(
+            pdf_path=sample_scanned_pdf,
+            page_number=99,
+            caption_bbox=[10.0, 50.0, 100.0, 70.0],
+            output_path=out_path,
+        )
+        assert res_cap_oob["status"] == "error"
+        assert "out of range" in res_cap_oob["message"]
+
+    empty_3d = np.zeros((0, 0, 3), dtype=np.uint8)
+    with patch("cv2.imread", return_value=empty_3d):
+        res_empty = crop_and_transform_region(
+            image_path=sample_plot_image,
+            bbox=[0, 0, 10, 10],
+            output_path=out_path,
+        )
+        assert res_empty["status"] == "error"
+        assert "Cropped region is empty" in res_empty["message"]

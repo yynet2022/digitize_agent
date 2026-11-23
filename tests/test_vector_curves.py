@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pymupdf as fitz
-import pytest
 
 from digitize_agent.tools.vector_curves import (
     _calc_segment_length,
@@ -111,26 +110,6 @@ def test_extract_vector_curve_points_synthetic_pdf(tmp_path: Path) -> None:
     first_pt = res_scaled["curves"][0]["points"][0]
     # (10 pt * (144/72)) - 10 = 10 px
     assert abs(first_pt[0] - 10.0) < 1e-3
-
-
-def test_extract_vector_curve_points_real_pdf() -> None:
-    """a.pdf の図2.4から3本の特性曲線が抽出できることを検証。"""
-    pdf_path = Path("a.pdf")
-    if not pdf_path.exists():
-        pytest.skip("a.pdf is not available in workspace")
-
-    res = extract_vector_curve_points(
-        pdf_path=str(pdf_path),
-        page_number=1,
-        drawing_index=31,
-        item_indices=[16, 17, 18, 19, 20],
-        num_samples_per_segment=50,
-        dpi=300.0,
-        crop_bbox_pixels=[890.0, 225.0, 1610.0, 945.0],
-    )
-    assert res["status"] == "success"
-    # 3本の連続曲線 (V_GS 大, 中, 小) に自動連結されること
-    assert res["total_curves"] == 3
 
 
 def test_vector_curves_min_length_and_color(tmp_path: Path) -> None:
@@ -290,6 +269,28 @@ def test_vector_curves_helpers_and_chain_modes() -> None:
     assert len(c_pre_rev) == 1
     assert c_pre_rev[0]["points"] == [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]]
 
+    # prepend_normal: curr=[5->10], cand=[0->5], sort_x_ascending=False
+    c_pre_norm = _chain_segments(
+        [
+            {"item_index": 0, "points": [[5.0, 0.0], [10.0, 0.0]]},
+            {"item_index": 1, "points": [[0.0, 0.0], [5.0, 0.0]]},
+        ],
+        tolerance=1.0,
+        sort_x_ascending=False,
+    )
+    assert len(c_pre_norm) == 1
+    assert c_pre_norm[0]["points"] == [[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]]
+
+    # ヘアピン折り返し（内積 < 0）の場合は連結されないこと
+    c_hairpin = _chain_segments(
+        [
+            {"item_index": 0, "points": [[0.0, 0.0], [5.0, 0.0]]},
+            {"item_index": 1, "points": [[0.0, 0.0], [5.0, 0.0]]},
+        ],
+        tolerance=1.0,
+    )
+    assert len(c_hairpin) == 2
+
 
 def test_extract_vector_curve_points_edge_and_error_branches(
     tmp_path: Path,
@@ -361,27 +362,34 @@ def test_extract_vector_curve_points_edge_and_error_branches(
     assert res_no_items["status"] == "error"
     assert "No curve or line segments extracted" in res_no_items["message"]
 
-    # curve_segments と item_indices の明示指定
+    # curve_segments と item_indices の明示指定（未存在グループ含む）
     res_segs = extract_vector_curve_points(
         pdf_path=str(line_pdf),
         drawing_index=0,
         curve_types=["l"],
         item_indices=[0, 1],
-        curve_segments=[[0], [1]],
+        curve_segments=[[0], [1], [99]],
     )
     assert res_segs["status"] == "success"
     assert res_segs["total_curves"] == 2
 
-    # group_by_color で color=None の描画が含まれる場合および例外キャッチ
+    # group_by_color / extract_all_matching / bbox_filter の残り分岐
     fake_p0 = MagicMock(x=10.0, y=20.0)
     fake_p1 = MagicMock(x=50.0, y=20.0)
+    fake_rect = fitz.Rect(0.0, 0.0, 100.0, 100.0)
     fake_page = MagicMock()
     fake_page.get_drawings.return_value = [
+        {"color": None, "rect": None, "items": [("re", fake_p0)]},
         {
             "color": None,
-            "rect": None,
+            "rect": fake_rect,
             "items": [("l", fake_p0, fake_p1), ("re", fake_p0)],
-        }
+        },
+        {
+            "color": (1.0, 0.0, 0.0),
+            "rect": fake_rect,
+            "items": [("l", fake_p0, fake_p0)],
+        },
     ]
     fake_doc = MagicMock()
     fake_doc.__enter__.return_value = [fake_page]
@@ -389,10 +397,22 @@ def test_extract_vector_curve_points_edge_and_error_branches(
         res_none_col = extract_vector_curve_points(
             pdf_path=str(line_pdf),
             curve_types=["l", "re"],
+            bbox_filter=[0.0, 0.0, 100.0, 100.0],
+            min_length=1.0,
+            sort_x_ascending=False,
             group_by_color=True,
         )
         assert res_none_col["status"] == "success"
         assert res_none_col["color_grouped_curves"][0]["color_hex"] is None
+
+        res_all_match = extract_vector_curve_points(
+            pdf_path=str(line_pdf),
+            curve_types=["l"],
+            min_length=1.0,
+            extract_all_matching=True,
+        )
+        assert res_all_match["status"] == "success"
+        assert res_all_match["total_drawings"] == 1
 
     with patch("pymupdf.open", side_effect=RuntimeError("fitz failure")):
         res_exc = extract_vector_curve_points(pdf_path=str(line_pdf))

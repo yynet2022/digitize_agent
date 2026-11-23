@@ -171,3 +171,20 @@ def test_ocr_region_text_additional_branches(
         res_exc = ocr_region_text(image_path=sample_plot_image)
         assert res_exc["status"] == "error"
         assert "OCR processing failed" in res_exc["message"]
+
+    # 存在しない pdf_path と whitelist=None での OCR 実行
+    mock_empty_data = {"text": [], "conf": []}
+    with (
+        patch(
+            "digitize_agent.tools.ocr_tools._ensure_tesseract_configured",
+            return_value=True,
+        ),
+        patch("pytesseract.image_to_data", return_value=mock_empty_data),
+        patch("pytesseract.image_to_string", return_value=""),
+    ):
+        res_no_wl = ocr_region_text(
+            image_path=sample_plot_image,
+            pdf_path="non_existent_for_ocr.pdf",
+            whitelist=None,
+        )
+        assert res_no_wl["confidence"] == 0.0

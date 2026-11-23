@@ -167,6 +167,12 @@ def test_convert_value_to_pixel_and_alignment_helpers() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         _convert_value_to_pixel(-1.0, log_calib)
 
+    with (
+        patch("math.log10", return_value=1.0),
+        pytest.raises(ValueError, match="Log references cannot be equal"),
+    ):
+        _convert_value_to_pixel(10.0, log_calib)
+
     # 3. _calculate_alignment_metric の空点列および全点画像範囲外
     dummy_img = np.zeros((20, 20, 3), dtype=np.uint8)
     assert _calculate_alignment_metric(dummy_img, []) == 0.0
@@ -270,3 +276,22 @@ def test_render_verification_overlay_error_and_nan_branches(
         )
         assert res_exc["status"] == "error"
         assert "Verification overlay failed" in res_exc["message"]
+
+    # 7. _convert_value_to_pixel が NaN を返した場合のスキップ分岐
+    wide_csv = temp_dir / "wide_for_nan.csv"
+    pd.DataFrame({"x": [1.0], "c1": [2.0], "c2": [3.0]}).to_csv(
+        wide_csv, index=False
+    )
+    with patch(
+        "digitize_agent.tools.visual_verifier._convert_value_to_pixel",
+        return_value=float("nan"),
+    ):
+        for c_file in (csv_ok, long_nan_csv, wide_csv):
+            res_nan_px = render_verification_overlay(
+                original_image_path=sample_plot_image,
+                csv_path=str(c_file),
+                x_calibration=x_calib,
+                y_calibration=y_calib,
+                output_overlay_path=out_img,
+            )
+            assert res_nan_px["status"] == "success"

@@ -302,6 +302,35 @@ def test_extract_plot_pixels_error_branches(
         assert res_exc["status"] == "error"
         assert "Pixel extraction failed" in res_exc["message"]
 
+    # exclude_bboxes に4要素未満の配列が含まれ、かつマスク該当0件の分岐
+    res_empty_mask = extract_plot_pixels_by_color(
+        image_path=sample_plot_image,
+        color_preset="yellow",
+        exclude_bboxes=[[1, 2]],
+        extract_mode="continuous_line",
+    )
+    assert res_empty_mask["status"] == "success"
+    assert res_empty_mask["point_count"] == 0
+
+    # scatter_centroids で contourArea < 1.0 および m00 == 0 の分岐
+    fake_cnt_small = np.array([[[10, 10]]], dtype=np.int32)
+    fake_cnt_zero_m00 = np.array([[[20, 30]], [[25, 30]]], dtype=np.int32)
+    with (
+        patch(
+            "cv2.findContours",
+            return_value=([fake_cnt_small, fake_cnt_zero_m00], None),
+        ),
+        patch("cv2.contourArea", side_effect=[0.5, 5.0]),
+        patch("cv2.moments", return_value={"m00": 0.0}),
+    ):
+        res_cnt = extract_plot_pixels_by_color(
+            image_path=sample_plot_image,
+            color_preset="blue",
+            extract_mode="scatter_centroids",
+        )
+        assert res_cnt["status"] == "success"
+        assert res_cnt["pixel_points"] == [[20, 30]]
+
 
 def test_detect_plot_colors_edge_and_error_branches(
     sample_plot_image: str, temp_dir: Path

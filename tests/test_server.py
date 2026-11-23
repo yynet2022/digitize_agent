@@ -5,6 +5,7 @@ create_server によるツール登録、一覧取得、
 """
 
 import asyncio
+import runpy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -141,3 +142,7 @@ def test_server_main_normal_and_keyboard_interrupt() -> None:
     ):
         main()
     assert exc_info.value.code == 0
+
+    with patch("mcp.server.mcpserver.MCPServer.run") as mock_run:
+        runpy.run_module("digitize_agent.server", run_name="__main__")
+        mock_run.assert_called_once_with(transport="stdio")

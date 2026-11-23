@@ -238,8 +238,68 @@ def test_geometry_helpers_and_blank_axes(temp_dir: Path) -> None:
     assert bf_filled is not None
     assert bf_filled["inner_bbox"][0] > bf_filled["outer_bbox"][0]
 
-    # 3. _extract_legend_items の空 ROI
+    # _detect_box_frame の非4頂点・アスペクト比外・充填率不足・小輪郭分岐
+    c_tri = np.array([[[10, 10]], [[90, 10]], [[50, 90]]], dtype=np.int32)
+    c_aspect = np.array(
+        [[[0, 0]], [[190, 0]], [[190, 20]], [[0, 20]]], dtype=np.int32
+    )
+    c_skew = np.array(
+        [[[10, 10]], [[180, 10]], [[100, 180]], [[10, 100]]], dtype=np.int32
+    )
+    c_main = np.array(
+        [[[20, 20]], [[180, 20]], [[180, 180]], [[20, 180]]], dtype=np.int32
+    )
+    c_small_child = np.array(
+        [[[30, 30]], [[50, 30]], [[50, 50]], [[30, 50]]], dtype=np.int32
+    )
+    # hierarchy: [Next, Previous, First_Child, Parent]
+    hier = np.array(
+        [
+            [
+                [1, -1, -1, -1],
+                [2, 0, -1, -1],
+                [3, 1, -1, -1],
+                [-1, 2, 4, -1],
+                [-1, -1, -1, 3],
+            ]
+        ],
+        dtype=np.int32,
+    )
+    with (
+        patch(
+            "cv2.findContours",
+            return_value=(
+                [c_tri, c_aspect, c_skew, c_main, c_small_child],
+                hier,
+            ),
+        ),
+        patch(
+            "cv2.contourArea",
+            side_effect=[10000.0, 10000.0, 8000.0, 25600.0, 400.0],
+        ),
+        patch(
+            "cv2.approxPolyDP",
+            side_effect=[c_tri, c_aspect, c_skew, c_main],
+        ),
+    ):
+        bf_edges = _detect_box_frame(filled)
+        assert bf_edges is not None
+
+    # 3. _extract_legend_items の空 ROI・微小ブロブ・有色サンプルの分岐
     assert _extract_legend_items(blank, [50, 50, 50, 50]) == []
+
+    leg_img = np.full((100, 150, 3), 255, dtype=np.uint8)
+    # 1. 微小ブロブ (bw < 15 でスキップ)
+    cv2.rectangle(leg_img, (10, 10), (15, 14), (0, 0, 0), -1)
+    # 2. 左端にくっついたブロブ (sample_roi 空スキップ)
+    cv2.rectangle(leg_img, (1, 25), (30, 35), (0, 0, 0), -1)
+    # 3. 左側に青い色サンプルがある通常のテキストブロブ
+    # テキストは x=45..75、青サンプルは x=20..30 (間隔 15px > 12px)
+    cv2.rectangle(leg_img, (45, 50), (75, 62), (0, 0, 0), -1)
+    cv2.rectangle(leg_img, (20, 50), (30, 62), (255, 0, 0), -1)
+    items_res = _extract_legend_items(leg_img, [0, 0, 150, 100])
+    assert len(items_res) == 1
+    assert items_res[0]["color_rgb"] == [0, 0, 255]
 
     # 4. 白紙画像に対する detect_axes_and_ticks と画像デコード失敗
     blank_path = str(temp_dir / "blank_axes.png")
@@ -293,6 +353,30 @@ def test_detect_legend_region_frameless_and_not_detected(
     assert res_fl["status"] == "success"
     assert res_fl["legend_detected"] is True
     assert res_fl["confidence"] == 0.65
+
+    # 4. detect_axes_and_ticks がエラーを返したときのフォールバックと
+    #    輪郭フィルタ (非4〜8頂点・枠外・アスペクト比外) の分岐
+    c_tri = np.array([[[30, 30]], [[80, 30]], [[55, 80]]], dtype=np.int32)
+    c_outside = np.array(
+        [[[0, 0]], [[80, 0]], [[80, 40]], [[0, 40]]], dtype=np.int32
+    )
+    c_tall = np.array(
+        [[[40, 40]], [[70, 40]], [[70, 100]], [[40, 100]]], dtype=np.int32
+    )
+    with (
+        patch(
+            "digitize_agent.tools.geometry_detect.detect_axes_and_ticks",
+            return_value={"status": "error"},
+        ),
+        patch(
+            "cv2.findContours",
+            side_effect=[([c_tri, c_outside, c_tall], None), ([], None)],
+        ),
+        patch("cv2.contourArea", return_value=1500.0),
+        patch("cv2.approxPolyDP", side_effect=[c_tri, c_outside, c_tall]),
+    ):
+        res_fb_leg = detect_legend_region(image_path=blank_path)
+        assert res_fb_leg["legend_detected"] is False
 
 
 def test_auto_calibrate_axes_scale_multipliers_and_errors(
@@ -358,3 +442,109 @@ def test_auto_calibrate_axes_scale_multipliers_and_errors(
     with patch("pymupdf.open", side_effect=RuntimeError("pdf open error")):
         res_pdf_err = auto_calibrate_axes(image_path=l_path, pdf_path=pdf1)
         assert res_pdf_err["status"] == "success"
+
+    # detect_axes_and_ticks がエラーを返した場合
+    with patch(
+        "digitize_agent.tools.geometry_detect.detect_axes_and_ticks",
+        return_value={"status": "error", "message": "axes error"},
+    ):
+        res_ax_err = auto_calibrate_axes(image_path=l_path)
+        assert res_ax_err["status"] == "error"
+
+    # PDF の page_number が範囲外かつ fallback_to_normalized=False の場合
+    res_no_fb = auto_calibrate_axes(
+        image_path=l_path,
+        pdf_path=pdf1,
+        page_number=99,
+        fallback_to_normalized=False,
+    )
+    assert res_no_fb["status"] == "success"
+    assert res_no_fb["x_calibration"] is None
+    assert res_no_fb["y_calibration"] is None
+
+    # 空白スパン、1つの目盛りに対する複数候補の距離比較、および v1 == v2 の分岐
+    from unittest.mock import MagicMock
+
+    fake_page = MagicMock()
+    fake_page.get_text.return_value = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": [
+                            {"text": "   ", "bbox": [0, 0, 5, 5]},
+                            # xt=60 に3候補、xt=100 に同値 "10"
+                            {"text": "99", "bbox": [68, 165, 72, 175]},
+                            {"text": "10", "bbox": [59, 165, 63, 175]},
+                            {"text": "88", "bbox": [73, 165, 77, 175]},
+                            {"text": "10", "bbox": [98, 165, 102, 175]},
+                            # yt=80 に3候補、yt=120 に同値 "5"
+                            {"text": "88", "bbox": [10, 88, 20, 92]},
+                            {"text": "5", "bbox": [10, 79, 20, 83]},
+                            {"text": "77", "bbox": [10, 93, 20, 97]},
+                            {"text": "5", "bbox": [10, 118, 20, 122]},
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    fake_doc = MagicMock()
+    fake_doc.__enter__.return_value = [fake_page]
+    with patch("pymupdf.open", return_value=fake_doc):
+        res_same_val = auto_calibrate_axes(
+            image_path=l_path,
+            pdf_path=pdf1,
+            dpi=72.0,
+            x_tick_candidates=[60, 100],
+            y_tick_candidates=[80, 120],
+            fallback_to_normalized=False,
+        )
+        assert res_same_val["status"] == "success"
+        assert res_same_val["x_calibration"] is None
+        assert res_same_val["y_calibration"] is None
+
+    # 片軸のみ成功して他方の軸のみ正規化フォールバックする分岐
+    fake_page_x_only = MagicMock()
+    fake_page_x_only.get_text.return_value = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": [
+                            {"text": "10", "bbox": [59, 165, 63, 175]},
+                            {"text": "20", "bbox": [98, 165, 102, 175]},
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    fake_page_y_only = MagicMock()
+    fake_page_y_only.get_text.return_value = {
+        "blocks": [
+            {
+                "lines": [
+                    {
+                        "spans": [
+                            {"text": "5", "bbox": [10, 79, 20, 83]},
+                            {"text": "15", "bbox": [10, 118, 20, 122]},
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    for fp in (fake_page_x_only, fake_page_y_only):
+        fd = MagicMock()
+        fd.__enter__.return_value = [fp]
+        with patch("pymupdf.open", return_value=fd):
+            res_partial = auto_calibrate_axes(
+                image_path=l_path,
+                pdf_path=pdf1,
+                dpi=72.0,
+                x_tick_candidates=[60, 100],
+                y_tick_candidates=[80, 120],
+                fallback_to_normalized=True,
+            )
+            assert res_partial["calibration_mode"] == "normalized_fallback"
